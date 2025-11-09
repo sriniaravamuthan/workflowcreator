@@ -20,6 +20,7 @@ import java.time.LocalDateTime;
 
 /**
  * TaskInstance entity representing an instance of a task in a workflow
+ * Supports SLA tracking, escalation, role-based assignment, and task inputs/outputs
  */
 @Entity
 @Table(name = "task_instances")
@@ -40,6 +41,12 @@ public class TaskInstance extends BaseEntity {
     @Column(length = 255)
     private String assignedTo;
 
+    @Column(length = 100)
+    private String requiredRole; // Role required to complete task
+
+    @Column(columnDefinition = "TEXT")
+    private String taskInput; // JSON-serialized input data for task
+
     @Column
     private LocalDateTime startedAt;
 
@@ -50,7 +57,7 @@ public class TaskInstance extends BaseEntity {
     private String comments;
 
     @Column(columnDefinition = "TEXT")
-    private String result;
+    private String result; // Task output/result
 
     @Column(nullable = false, columnDefinition = "INT DEFAULT 0")
     private Integer retryCount = 0;
@@ -60,6 +67,25 @@ public class TaskInstance extends BaseEntity {
 
     @Column(length = 500)
     private String errorMessage;
+
+    // SLA Tracking
+    @Column
+    private LocalDateTime dueAt; // SLA deadline
+
+    @Column
+    private LocalDateTime escalatedAt; // When task was escalated
+
+    @Column(nullable = false, columnDefinition = "BOOLEAN DEFAULT false")
+    private Boolean isEscalated = false;
+
+    @Column(length = 100)
+    private String escalatedToUser; // User escalated to
+
+    @Column(columnDefinition = "INT DEFAULT 0")
+    private Integer slaMinutes = 0; // Task SLA in minutes
+
+    @Column(nullable = false, columnDefinition = "BOOLEAN DEFAULT false")
+    private Boolean slaBreached = false;
 
     @ManyToOne
     @JoinColumn(name = "workflow_instance_id", nullable = false, foreignKey = @ForeignKey(name = "fk_task_workflow"))
@@ -73,5 +99,20 @@ public class TaskInstance extends BaseEntity {
 
     public Boolean isRetryable() {
         return retryCount < maxRetries && TaskStatus.FAILED.equals(status);
+    }
+
+    public Boolean isSLABreached() {
+        if (dueAt == null) {
+            return false;
+        }
+        return LocalDateTime.now().isAfter(dueAt);
+    }
+
+    public Integer getTimeRemainingMinutes() {
+        if (dueAt == null) {
+            return null;
+        }
+        long minutesRemaining = java.time.temporal.ChronoUnit.MINUTES.between(LocalDateTime.now(), dueAt);
+        return (int) minutesRemaining;
     }
 }

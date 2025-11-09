@@ -15,12 +15,13 @@ import java.util.Set;
 
 /**
  * WorkflowTemplate entity representing a template for workflows
- * Used to define the structure and tasks of a workflow
+ * Defines structure, tasks, gates, decision logic, and conditions for clinical workflows
+ * Supports versioning and governance controls
  */
 @Entity
 @Table(name = "workflow_templates")
 @Data
-@EqualsAndHashCode(callSuper = true, exclude = "tasks")
+@EqualsAndHashCode(callSuper = true, exclude = {"tasks", "gates", "decisionLogics"})
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
@@ -41,14 +42,39 @@ public class WorkflowTemplate extends BaseEntity {
     @Column(length = 50)
     private String category;
 
+    @Column(length = 100)
+    private String reviewStatus; // DRAFT, IN_REVIEW, APPROVED, PUBLISHED, DEPRECATED
+
+    @Column(length = 100)
+    private String approvedByUser;
+
+    @Column(columnDefinition = "TEXT")
+    private String notes;
+
     @OneToMany(mappedBy = "template", orphanRemoval = true)
     @Builder.Default
     private Set<WorkflowTaskDefinition> tasks = new HashSet<>();
+
+    @OneToMany(mappedBy = "template", orphanRemoval = true)
+    @Builder.Default
+    private Set<Gate> gates = new HashSet<>();
+
+    @OneToMany(mappedBy = "template", orphanRemoval = true)
+    @Builder.Default
+    private Set<DecisionLogic> decisionLogics = new HashSet<>();
 
     public Integer getNextTaskOrder() {
         return tasks.isEmpty() ? 1 : tasks.stream()
                 .mapToInt(WorkflowTaskDefinition::getTaskOrder)
                 .max()
                 .orElse(0) + 1;
+    }
+
+    public boolean isPublished() {
+        return "PUBLISHED".equals(reviewStatus);
+    }
+
+    public boolean isDeprecated() {
+        return "DEPRECATED".equals(reviewStatus);
     }
 }
