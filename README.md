@@ -68,18 +68,43 @@ src/main/java/com/hmis/workflow/
 - Repository layer for data access
 - Service layer with core business logic
 - Kafka configuration and event producers
+- **REST API controllers for all major entities (44 endpoints)**
 - Comprehensive documentation
 
 ### 📋 Planned
-- REST API controllers
 - Kafka event consumers
 - Scheduled SLA monitoring
 - Module integration adapters (Lab, Imaging, Pharmacy, ADT)
 - UI dashboard and designer
 
+## REST API Endpoints for UI Development
+
+Complete REST API with 44 endpoints:
+
+| Component | Count | Path |
+|-----------|-------|------|
+| Workflow Templates | 15 | `/workflows/templates/*` |
+| Workflow Instances | 6 | `/workflows/instances/*` |
+| Task Instances | 12 | `/workflows/tasks/*` |
+| Orders | 11 | `/workflows/orders/*` |
+
+**Key Capabilities:**
+- Create, manage, and publish workflow templates
+- Create patient workflow instances with automatic task generation
+- Assign and execute individual tasks with SLA tracking
+- Manage orders through 8-state lifecycle
+- Handle task/workflow escalation and failures
+- Auto-create compensation actions on order cancellation
+
+**Access APIs:**
+- Interactive Swagger UI: `http://localhost:8080/swagger-ui.html`
+- REST Endpoints: `http://localhost:8080/api/v1`
+
 ## Documentation
 
-See [README_IMPLEMENTATION.md](README_IMPLEMENTATION.md) for comprehensive architecture and design documentation.
+- **[API_DOCUMENTATION.md](API_DOCUMENTATION.md)** - Complete REST API reference (44 endpoints, 50+ examples)
+- **[README_IMPLEMENTATION.md](README_IMPLEMENTATION.md)** - Architecture and design documentation
+- **Swagger UI** - Interactive API explorer at `http://localhost:8080/swagger-ui.html`
 
 ## Guided by HMIS Workflow Guidelines
 
