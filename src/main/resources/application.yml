@@ -38,6 +38,12 @@ spring:
       properties:
         spring.json.trusted.packages: "*"
 
+  task:
+    scheduling:
+      pool:
+        size: 5
+      thread-name-prefix: workflow-scheduler-
+
 server:
   port: 8080
   servlet:
