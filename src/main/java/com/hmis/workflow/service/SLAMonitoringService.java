@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Service for monitoring SLA breaches on task instances.
@@ -22,6 +23,7 @@ public class SLAMonitoringService {
 
     private final TaskInstanceRepository taskInstanceRepository;
     private final TaskInstanceService taskInstanceService;
+    private final NotificationService notificationService;
 
     /**
      * Monitors SLA breaches for all active tasks
@@ -111,29 +113,79 @@ public class SLAMonitoringService {
 
     /**
      * Sends alerts/notifications for SLA breaches
-     * In production, this would integrate with notification systems (email, SMS, dashboards)
+     * Integrates with multi-channel notification system (Email, SMS, WhatsApp, Push)
      */
     private void sendSLABreachAlert(TaskInstance task, String reason) {
         try {
             log.warn("Sending SLA breach alert for task: {} - Reason: {}", task.getId(), reason);
 
-            // In production, these notifications would be sent to:
-            // - Task assignee (direct notification)
-            // - Task manager/supervisor (escalation)
-            // - Workflow coordinator
-            // - Dashboard alerts
-            // - Mobile push notifications if applicable
+            // Notify task assignee directly
+            if (task.getAssignedTo() != null) {
+                NotificationRequest assigneeAlert = new NotificationRequest(
+                        task.getAssignedTo(),
+                        "SLA_BREACH",
+                        "URGENT: Your Task SLA Has Been Breached",
+                        String.format(
+                                "Your task '%s' has exceeded its SLA deadline!\n\n" +
+                                "Patient: %s\n" +
+                                "Due: %s\n" +
+                                "Overdue by: %.1f hours\n\n" +
+                                "Please complete this task immediately.",
+                                task.getTaskDefinition().getName(),
+                                task.getWorkflowInstance().getPatient().getId(),
+                                task.getDueAt(),
+                                calculateHoursOverdue(task.getDueAt())
+                        )
+                );
+                assigneeAlert.setTaskInstanceId(task.getId());
+                assigneeAlert.setWorkflowInstanceId(task.getWorkflowInstance().getId());
+                assigneeAlert.setPatientId(task.getWorkflowInstance().getPatient().getId());
+
+                notificationService.notifyUser(assigneeAlert);
+                log.info("SLA breach notification sent to task assignee: {}", task.getAssignedTo());
+            }
+
+            // Notify escalated manager/supervisor
+            if (task.getEscalatedToUser() != null) {
+                NotificationRequest managerAlert = new NotificationRequest(
+                        task.getEscalatedToUser(),
+                        "SLA_BREACH",
+                        "CRITICAL: Task SLA Breach Escalation Required",
+                        String.format(
+                                "CRITICAL ALERT: Task SLA has been breached and requires immediate attention.\n\n" +
+                                "Task: %s\n" +
+                                "Patient: %s\n" +
+                                "Assigned To: %s\n" +
+                                "Due: %s\n" +
+                                "Overdue by: %.1f hours\n\n" +
+                                "Reason: %s\n\n" +
+                                "This task has been escalated to you for resolution.",
+                                task.getTaskDefinition().getName(),
+                                task.getWorkflowInstance().getPatient().getId(),
+                                task.getAssignedTo(),
+                                task.getDueAt(),
+                                calculateHoursOverdue(task.getDueAt()),
+                                reason
+                        )
+                );
+                managerAlert.setTaskInstanceId(task.getId());
+                managerAlert.setWorkflowInstanceId(task.getWorkflowInstance().getId());
+                managerAlert.setPatientId(task.getWorkflowInstance().getPatient().getId());
+
+                notificationService.notifyUser(managerAlert);
+                log.info("SLA breach escalation notification sent to manager: {}", task.getEscalatedToUser());
+            }
 
             String alertMessage = String.format(
                     "ALERT: Task '%s' has exceeded SLA deadline. " +
-                            "Assigned to: %s, Due: %s, Overdue by: %.1f hours",
+                    "Assigned to: %s, Due: %s, Overdue by: %.1f hours",
                     task.getTaskDefinition().getName(),
                     task.getAssignedTo(),
                     task.getDueAt(),
                     calculateHoursOverdue(task.getDueAt())
             );
 
-            log.info(alertMessage);
+            log.warn(alertMessage);
 
         } catch (Exception e) {
             log.error("Error sending SLA breach alert for task {}: {}", task.getId(), e.getMessage());

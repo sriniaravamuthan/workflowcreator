@@ -4,6 +4,8 @@ import com.hmis.workflow.domain.entity.TaskInstance;
 import com.hmis.workflow.domain.entity.WorkflowInstance;
 import com.hmis.workflow.domain.enums.TaskStatus;
 import com.hmis.workflow.domain.event.TaskEvent;
+import com.hmis.workflow.service.NotificationRequest;
+import com.hmis.workflow.service.NotificationService;
 import com.hmis.workflow.service.TaskInstanceService;
 import com.hmis.workflow.service.WorkflowInstanceService;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +29,7 @@ public class TaskEventConsumer {
 
     private final TaskInstanceService taskInstanceService;
     private final WorkflowInstanceService workflowInstanceService;
+    private final NotificationService notificationService;
 
     /**
      * Listens for task events and processes them
@@ -242,6 +245,124 @@ public class TaskEventConsumer {
         } catch (Exception e) {
             log.error("Error checking blocking instructions for workflow: {}", workflowInstanceId, e);
             return true; // Default to blocking on error for safety
+        }
+    }
+
+    /**
+     * Sends task escalation notification to escalated user
+     */
+    private void notifyTaskEscalation(TaskInstance task, String escalatedToUser) {
+        try {
+            String subject = String.format("URGENT: Task '%s' Escalated - SLA Breach",
+                    task.getTaskDefinition().getName());
+
+            String message = String.format(
+                    "Task '%s' has been escalated due to SLA breach.\n\n" +
+                    "Patient: %s\n" +
+                    "Due Date: %s\n" +
+                    "Escalated By: System\n" +
+                    "Priority: URGENT\n\n" +
+                    "Please attend to this task immediately.",
+                    task.getTaskDefinition().getName(),
+                    task.getWorkflowInstance().getPatient().getId(),
+                    task.getDueAt()
+            );
+
+            NotificationRequest request = new NotificationRequest(
+                    escalatedToUser,
+                    "TASK_ESCALATION",
+                    subject,
+                    message
+            );
+            request.setTaskInstanceId(task.getId());
+            request.setWorkflowInstanceId(task.getWorkflowInstance().getId());
+            request.setPatientId(task.getWorkflowInstance().getPatient().getId());
+
+            notificationService.notifyUser(request);
+            log.info("Task escalation notification sent to: {}", escalatedToUser);
+
+        } catch (Exception e) {
+            log.error("Error sending task escalation notification", e);
+        }
+    }
+
+    /**
+     * Sends task assignment notification to assigned user
+     */
+    private void notifyTaskAssignment(TaskInstance task, String assignedToUser) {
+        try {
+            String subject = String.format("New Task Assigned: '%s'",
+                    task.getTaskDefinition().getName());
+
+            String message = String.format(
+                    "You have been assigned a new task.\n\n" +
+                    "Task: %s\n" +
+                    "Patient: %s\n" +
+                    "Due Date: %s\n" +
+                    "Priority: %s\n\n" +
+                    "Please log in to the workflow system to view details and start the task.",
+                    task.getTaskDefinition().getName(),
+                    task.getWorkflowInstance().getPatient().getId(),
+                    task.getDueAt(),
+                    task.getTaskDefinition().getPriority() != null ?
+                            task.getTaskDefinition().getPriority() : "NORMAL"
+            );
+
+            NotificationRequest request = new NotificationRequest(
+                    assignedToUser,
+                    "TASK_ASSIGNMENT",
+                    subject,
+                    message
+            );
+            request.setTaskInstanceId(task.getId());
+            request.setWorkflowInstanceId(task.getWorkflowInstance().getId());
+            request.setPatientId(task.getWorkflowInstance().getPatient().getId());
+
+            notificationService.notifyUser(request);
+            log.info("Task assignment notification sent to: {}", assignedToUser);
+
+        } catch (Exception e) {
+            log.error("Error sending task assignment notification", e);
+        }
+    }
+
+    /**
+     * Sends SLA breach notification
+     */
+    private void notifySLABreach(TaskInstance task, String escalatedToUser) {
+        try {
+            String subject = "ALERT: Task SLA Breach";
+
+            String message = String.format(
+                    "Critical Alert: Task SLA has been breached!\n\n" +
+                    "Task: %s\n" +
+                    "Patient: %s\n" +
+                    "Due Date: %s\n" +
+                    "Current Time: %s\n" +
+                    "Assigned To: %s\n\n" +
+                    "Immediate action required.",
+                    task.getTaskDefinition().getName(),
+                    task.getWorkflowInstance().getPatient().getId(),
+                    task.getDueAt(),
+                    java.time.LocalDateTime.now(),
+                    task.getAssignedTo()
+            );
+
+            NotificationRequest request = new NotificationRequest(
+                    escalatedToUser,
+                    "SLA_BREACH",
+                    subject,
+                    message
+            );
+            request.setTaskInstanceId(task.getId());
+            request.setWorkflowInstanceId(task.getWorkflowInstance().getId());
+            request.setPatientId(task.getWorkflowInstance().getPatient().getId());
+
+            notificationService.notifyUser(request);
+            log.warn("SLA breach notification sent to: {}", escalatedToUser);
+
+        } catch (Exception e) {
+            log.error("Error sending SLA breach notification", e);
         }
     }
 }
