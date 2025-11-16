@@ -13,10 +13,28 @@ import java.util.UUID;
 @Repository
 public interface WorkflowTemplateRepository extends JpaRepository<WorkflowTemplate, UUID> {
     Optional<WorkflowTemplate> findByName(String name);
-    List<WorkflowTemplate> findByActiveTrue();
-    List<WorkflowTemplate> findByCategory(String category);
-    List<WorkflowTemplate> findByReviewStatus(String reviewStatus);
 
-    @Query("SELECT w FROM WorkflowTemplate w WHERE w.active = true AND w.reviewStatus = 'PUBLISHED'")
+    @Query("SELECT w FROM WorkflowTemplate w WHERE w.active = true AND w.isDeleted = false")
+    List<WorkflowTemplate> findByActiveTrue();
+
+    @Query("SELECT w FROM WorkflowTemplate w WHERE w.category = :category AND w.isDeleted = false")
+    List<WorkflowTemplate> findByCategory(@Param("category") String category);
+
+    @Query("SELECT w FROM WorkflowTemplate w WHERE w.reviewStatus = :reviewStatus AND w.isDeleted = false")
+    List<WorkflowTemplate> findByReviewStatus(@Param("reviewStatus") String reviewStatus);
+
+    @Query("SELECT w FROM WorkflowTemplate w WHERE w.active = true AND w.reviewStatus = 'PUBLISHED' AND w.isDeleted = false")
     List<WorkflowTemplate> findAllPublished();
+
+    @Query("SELECT w FROM WorkflowTemplate w WHERE w.isDeleted = false")
+    List<WorkflowTemplate> findAllNonDeleted();
+
+    @Query("SELECT w FROM WorkflowTemplate w WHERE w.isDeleted = true")
+    List<WorkflowTemplate> findAllDeleted();
+
+    @Query("SELECT w FROM WorkflowTemplate w WHERE w.parentTemplateId = :parentId AND w.isDeleted = false")
+    List<WorkflowTemplate> findVersionsByParentTemplate(@Param("parentId") UUID parentId);
+
+    @Query("SELECT w FROM WorkflowTemplate w WHERE w.clonedFromTemplateId = :clonedFromId AND w.isDeleted = false")
+    List<WorkflowTemplate> findClonesOfTemplate(@Param("clonedFromId") UUID clonedFromId);
 }

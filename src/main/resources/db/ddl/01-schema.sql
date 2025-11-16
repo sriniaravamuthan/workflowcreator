@@ -39,6 +39,9 @@ CREATE TABLE workflow_templates (
     review_status VARCHAR(100),
     approved_by_user VARCHAR(100),
     notes CLOB,
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    cloned_from_template_id VARCHAR(36),
+    parent_template_id VARCHAR(36),
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
     created_by VARCHAR(255),
@@ -67,6 +70,31 @@ CREATE TABLE workflow_task_definitions (
     created_by VARCHAR(255),
     updated_by VARCHAR(255),
     FOREIGN KEY (template_id) REFERENCES workflow_templates(id) ON DELETE CASCADE
+);
+
+-- ============================================================================
+-- TEMPLATE_ORDERS TABLE
+-- ============================================================================
+CREATE TABLE template_orders (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    template_id VARCHAR(36) NOT NULL,
+    order_code VARCHAR(100) NOT NULL,
+    order_name VARCHAR(255) NOT NULL,
+    description VARCHAR(1000),
+    external_api_endpoint VARCHAR(500),
+    api_method VARCHAR(10) NOT NULL DEFAULT 'GET',
+    api_request_payload CLOB,
+    is_required BOOLEAN NOT NULL DEFAULT TRUE,
+    is_automatic BOOLEAN NOT NULL DEFAULT FALSE,
+    order_sequence INT,
+    metadata CLOB,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    created_by VARCHAR(255),
+    updated_by VARCHAR(255),
+    FOREIGN KEY (template_id) REFERENCES workflow_templates(id) ON DELETE CASCADE,
+    UNIQUE (template_id, order_code)
 );
 
 -- ============================================================================
@@ -369,10 +397,20 @@ CREATE INDEX idx_workflow_templates_name ON workflow_templates(name);
 CREATE INDEX idx_workflow_templates_category ON workflow_templates(category);
 CREATE INDEX idx_workflow_templates_review_status ON workflow_templates(review_status);
 CREATE INDEX idx_workflow_templates_active ON workflow_templates(active);
+CREATE INDEX idx_workflow_templates_is_deleted ON workflow_templates(is_deleted);
+CREATE INDEX idx_workflow_templates_cloned_from ON workflow_templates(cloned_from_template_id);
+CREATE INDEX idx_workflow_templates_parent ON workflow_templates(parent_template_id);
 
 -- Workflow Task Definition indexes
 CREATE INDEX idx_workflow_task_definitions_template_id ON workflow_task_definitions(template_id);
 CREATE INDEX idx_workflow_task_definitions_task_order ON workflow_task_definitions(task_order);
+
+-- Template Order indexes
+CREATE INDEX idx_template_orders_template_id ON template_orders(template_id);
+CREATE INDEX idx_template_orders_order_code ON template_orders(order_code);
+CREATE INDEX idx_template_orders_is_active ON template_orders(is_active);
+CREATE INDEX idx_template_orders_is_automatic ON template_orders(is_automatic);
+CREATE INDEX idx_template_orders_order_sequence ON template_orders(order_sequence);
 
 -- Workflow Instance indexes
 CREATE INDEX idx_workflow_instances_workflow_instance_id ON workflow_instances(workflow_instance_id);

@@ -1,13 +1,17 @@
 package com.hmis.workflow.controller;
 
+import com.hmis.workflow.domain.entity.TemplateOrder;
 import com.hmis.workflow.domain.entity.WorkflowTemplate;
 import com.hmis.workflow.domain.entity.WorkflowTaskDefinition;
+import com.hmis.workflow.dto.AddOrderToTemplateRequest;
 import com.hmis.workflow.dto.AddTaskToTemplateRequest;
 import com.hmis.workflow.dto.ApiResponse;
 import com.hmis.workflow.dto.CreateWorkflowTemplateRequest;
+import com.hmis.workflow.dto.TemplateOrderDTO;
 import com.hmis.workflow.dto.UpdateWorkflowTemplateRequest;
 import com.hmis.workflow.dto.WorkflowTaskDefinitionDTO;
 import com.hmis.workflow.dto.WorkflowTemplateDTO;
+import com.hmis.workflow.service.TemplateManagementService;
 import com.hmis.workflow.service.WorkflowTemplateService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -37,6 +41,7 @@ import java.util.stream.Collectors;
 public class WorkflowTemplateController {
 
     private final WorkflowTemplateService templateService;
+    private final TemplateManagementService templateManagementService;
 
     /**
      * Create a new workflow template
@@ -148,17 +153,17 @@ public class WorkflowTemplateController {
     }
 
     /**
-     * Delete template (DRAFT only)
+     * Soft delete template (marks as deleted without removing from DB)
      * DELETE /workflows/templates/{id}
      */
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<String>> deleteTemplate(@PathVariable UUID id) {
-        log.info("Deleting workflow template: {}", id);
+        log.info("Soft deleting workflow template: {}", id);
 
-        templateService.deleteTemplate(id);
+        templateManagementService.softDeleteTemplate(id);
 
         return ResponseEntity.ok(ApiResponse.success("Template deleted successfully",
-                "Template deleted successfully"));
+                "Template soft-deleted successfully"));
     }
 
     /**
@@ -233,6 +238,111 @@ public class WorkflowTemplateController {
         WorkflowTemplateDTO dto = mapToDTO(template);
 
         return ResponseEntity.ok(ApiResponse.success(dto, "Template deprecated successfully"));
+    }
+
+    /**
+     * EDIT operation: Archives current template and creates new edited version with cloned data
+     * Archives current version and creates new DRAFT version with incremented version number
+     * Clones all tasks and orders to new version
+     * POST /workflows/templates/{id}/edit
+     */
+    @PostMapping("/{id}/edit")
+    public ResponseEntity<ApiResponse<WorkflowTemplateDTO>> editTemplate(
+            @PathVariable UUID id,
+            @RequestBody(required = false) EditTemplateRequest request) {
+        log.info("Editing workflow template: {}", id);
+
+        String newName = request != null ? request.getNewName() : null;
+        String newDescription = request != null ? request.getNewDescription() : null;
+
+        WorkflowTemplate editedTemplate = templateManagementService.editTemplate(id, newName, newDescription);
+        WorkflowTemplateDTO dto = mapToDTO(editedTemplate);
+
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.success(dto, "Template edited successfully. New version created with all tasks and orders cloned"));
+    }
+
+    /**
+     * CLONE operation: Creates exact copy of template
+     * Useful for creating templates based on existing ones
+     * POST /workflows/templates/{id}/clone
+     */
+    @PostMapping("/{id}/clone")
+    public ResponseEntity<ApiResponse<WorkflowTemplateDTO>> cloneTemplate(
+            @PathVariable UUID id,
+            @RequestBody(required = false) CloneTemplateRequest request) {
+        log.info("Cloning workflow template: {}", id);
+
+        String newName = request != null ? request.getNewName() : null;
+
+        WorkflowTemplate clonedTemplate = templateManagementService.cloneTemplate(id, newName);
+        WorkflowTemplateDTO dto = mapToDTO(clonedTemplate);
+
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.success(dto, "Template cloned successfully with all tasks and orders"));
+    }
+
+    /**
+     * Add order to template
+     * Orders are external API calls that are part of the workflow
+     * POST /workflows/templates/{id}/orders
+     */
+    @PostMapping("/{id}/orders")
+    public ResponseEntity<ApiResponse<TemplateOrderDTO>> addOrderToTemplate(
+            @PathVariable UUID id,
+            @RequestBody AddOrderToTemplateRequest request) {
+        log.info("Adding order '{}' to workflow template: {}", request.getOrderCode(), id);
+
+        TemplateOrder order = TemplateOrder.builder()
+                .orderCode(request.getOrderCode())
+                .orderName(request.getOrderName())
+                .description(request.getDescription())
+                .externalApiEndpoint(request.getExternalApiEndpoint())
+                .apiMethod(request.getApiMethod())
+                .apiRequestPayload(request.getApiRequestPayload())
+                .isRequired(request.getIsRequired())
+                .isAutomatic(request.getIsAutomatic())
+                .orderSequence(request.getOrderSequence())
+                .metadata(request.getMetadata())
+                .build();
+
+        TemplateOrder savedOrder = templateManagementService.addOrderToTemplate(id, order);
+        TemplateOrderDTO dto = mapOrderToDTO(savedOrder);
+
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.success(dto, "Order added to template successfully"));
+    }
+
+    /**
+     * Get all orders in a template
+     * GET /workflows/templates/{id}/orders
+     */
+    @GetMapping("/{id}/orders")
+    public ResponseEntity<ApiResponse<List<TemplateOrderDTO>>> getTemplateOrders(@PathVariable UUID id) {
+        log.info("Fetching orders for workflow template: {}", id);
+
+        WorkflowTemplate template = templateService.getTemplate(id);
+        List<TemplateOrderDTO> orders = template.getOrders().stream()
+                .map(this::mapOrderToDTO)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(orders, "Orders retrieved successfully"));
+    }
+
+    /**
+     * Delete order from template
+     * DELETE /workflows/templates/{id}/orders/{orderId}
+     */
+    @DeleteMapping("/{id}/orders/{orderId}")
+    public ResponseEntity<ApiResponse<String>> deleteOrderFromTemplate(
+            @PathVariable UUID id,
+            @PathVariable String orderId) {
+        log.info("Deleting order {} from workflow template: {}", orderId, id);
+
+        templateManagementService.removeOrderFromTemplate(id, orderId);
+
+        return ResponseEntity.ok(ApiResponse.success("Order deleted from template successfully",
+                "Order deleted from template successfully"));
     }
 
     /**
@@ -340,6 +450,25 @@ public class WorkflowTemplateController {
                 .build();
     }
 
+    private TemplateOrderDTO mapOrderToDTO(TemplateOrder order) {
+        return TemplateOrderDTO.builder()
+                .id(order.getId())
+                .templateId(order.getTemplateId())
+                .orderCode(order.getOrderCode())
+                .orderName(order.getOrderName())
+                .description(order.getDescription())
+                .externalApiEndpoint(order.getExternalApiEndpoint())
+                .apiMethod(order.getApiMethod())
+                .isRequired(order.getIsRequired())
+                .isAutomatic(order.getIsAutomatic())
+                .orderSequence(order.getOrderSequence())
+                .metadata(order.getMetadata())
+                .isActive(order.getIsActive())
+                .createdAt(order.getCreatedAt())
+                .updatedAt(order.getUpdatedAt())
+                .build();
+    }
+
     /**
      * Inner class for approval request
      */
@@ -352,6 +481,45 @@ public class WorkflowTemplateController {
 
         public void setApprovedBy(String approvedBy) {
             this.approvedBy = approvedBy;
+        }
+    }
+
+    /**
+     * Inner class for EDIT request
+     */
+    static class EditTemplateRequest {
+        public String newName;
+        public String newDescription;
+
+        public String getNewName() {
+            return newName;
+        }
+
+        public void setNewName(String newName) {
+            this.newName = newName;
+        }
+
+        public String getNewDescription() {
+            return newDescription;
+        }
+
+        public void setNewDescription(String newDescription) {
+            this.newDescription = newDescription;
+        }
+    }
+
+    /**
+     * Inner class for CLONE request
+     */
+    static class CloneTemplateRequest {
+        public String newName;
+
+        public String getNewName() {
+            return newName;
+        }
+
+        public void setNewName(String newName) {
+            this.newName = newName;
         }
     }
 }
