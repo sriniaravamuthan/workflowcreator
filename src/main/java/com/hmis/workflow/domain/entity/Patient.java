@@ -1,5 +1,6 @@
 package com.hmis.workflow.domain.entity;
 
+import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.OneToMany;
@@ -20,7 +21,7 @@ import java.util.Set;
 @Entity
 @Table(name = "patients")
 @Data
-@EqualsAndHashCode(callSuper = true, exclude = "workflowInstances")
+@EqualsAndHashCode(callSuper = true, exclude = {"workflowInstances", "clinicalDataPoints"})
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
@@ -59,6 +60,10 @@ public class Patient extends BaseEntity {
     @OneToMany(mappedBy = "patient")
     @Builder.Default
     private Set<WorkflowInstance> workflowInstances = new HashSet<>();
+
+    @OneToMany(mappedBy = "patient", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    private Set<ClinicalDataPoint> clinicalDataPoints = new HashSet<>();
 
     public String getFullName() {
         if (middleName != null && !middleName.isBlank()) {

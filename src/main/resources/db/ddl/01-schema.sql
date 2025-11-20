@@ -110,6 +110,11 @@ CREATE TABLE workflow_instances (
     encounter_id VARCHAR(100),
     is_escalated BOOLEAN NOT NULL DEFAULT FALSE,
     escalation_reason VARCHAR(500),
+    review_status VARCHAR(50) NOT NULL DEFAULT 'PENDING_REVIEW',
+    reviewed_by_user VARCHAR(100),
+    reviewed_at TIMESTAMP,
+    review_notes CLOB,
+    can_execute BOOLEAN NOT NULL DEFAULT FALSE,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL,
@@ -187,6 +192,31 @@ CREATE TABLE orders (
 );
 
 -- ============================================================================
+-- ORDER_ADJUSTMENTS TABLE
+-- ============================================================================
+CREATE TABLE order_adjustments (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    adjustment_code VARCHAR(100) NOT NULL UNIQUE,
+    order_id VARCHAR(36) NOT NULL,
+    workflow_instance_id VARCHAR(36) NOT NULL,
+    parameter_name VARCHAR(255) NOT NULL,
+    original_value CLOB NOT NULL,
+    adjusted_value CLOB NOT NULL,
+    adjustment_reason CLOB,
+    adjustment_type VARCHAR(50) NOT NULL DEFAULT 'PARAMETER',
+    is_applied BOOLEAN NOT NULL DEFAULT FALSE,
+    adjusted_by_user VARCHAR(100),
+    adjusted_at TIMESTAMP,
+    metadata CLOB,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    created_by VARCHAR(255),
+    updated_by VARCHAR(255),
+    FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+    FOREIGN KEY (workflow_instance_id) REFERENCES workflow_instances(id) ON DELETE CASCADE
+);
+
+-- ============================================================================
 -- ORDER_SETS TABLE
 -- ============================================================================
 CREATE TABLE order_sets (
@@ -252,6 +282,32 @@ CREATE TABLE order_set_conditions (
     created_by VARCHAR(255),
     updated_by VARCHAR(255),
     FOREIGN KEY (order_set_id) REFERENCES order_sets(id) ON DELETE CASCADE
+);
+
+-- ============================================================================
+-- CLINICAL_DATA_POINTS TABLE
+-- ============================================================================
+CREATE TABLE clinical_data_points (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    patient_id VARCHAR(36) NOT NULL,
+    data_point_code VARCHAR(100) NOT NULL,
+    display_name VARCHAR(255) NOT NULL,
+    value CLOB,
+    unit VARCHAR(20),
+    numeric_value DECIMAL(10, 2),
+    measurement_time TIMESTAMP NOT NULL,
+    measured_by_user VARCHAR(100),
+    measurement_method VARCHAR(100),
+    data_source VARCHAR(100),
+    is_normal BOOLEAN NOT NULL DEFAULT FALSE,
+    reference_range CLOB,
+    interpretation CLOB,
+    metadata CLOB,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    created_by VARCHAR(255),
+    updated_by VARCHAR(255),
+    FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE
 );
 
 -- ============================================================================
@@ -419,6 +475,8 @@ CREATE INDEX idx_workflow_instances_template_id ON workflow_instances(template_i
 CREATE INDEX idx_workflow_instances_status ON workflow_instances(status);
 CREATE INDEX idx_workflow_instances_is_escalated ON workflow_instances(is_escalated);
 CREATE INDEX idx_workflow_instances_created_at ON workflow_instances(created_at);
+CREATE INDEX idx_workflow_instances_review_status ON workflow_instances(review_status);
+CREATE INDEX idx_workflow_instances_can_execute ON workflow_instances(can_execute);
 
 -- Task Instance indexes
 CREATE INDEX idx_task_instances_task_instance_id ON task_instances(task_instance_id);
@@ -436,6 +494,20 @@ CREATE INDEX idx_orders_workflow_instance_id ON orders(workflow_instance_id);
 CREATE INDEX idx_orders_status ON orders(status);
 CREATE INDEX idx_orders_order_type ON orders(order_type);
 CREATE INDEX idx_orders_department_target ON orders(department_target);
+
+-- Order Adjustment indexes
+CREATE INDEX idx_order_adjustments_order_id ON order_adjustments(order_id);
+CREATE INDEX idx_order_adjustments_workflow_instance_id ON order_adjustments(workflow_instance_id);
+CREATE INDEX idx_order_adjustments_is_applied ON order_adjustments(is_applied);
+CREATE INDEX idx_order_adjustments_adjustment_code ON order_adjustments(adjustment_code);
+CREATE INDEX idx_order_adjustments_adjustment_type ON order_adjustments(adjustment_type);
+
+-- Clinical Data Point indexes
+CREATE INDEX idx_clinical_data_points_patient_id ON clinical_data_points(patient_id);
+CREATE INDEX idx_clinical_data_points_data_point_code ON clinical_data_points(data_point_code);
+CREATE INDEX idx_clinical_data_points_measurement_time ON clinical_data_points(measurement_time);
+CREATE INDEX idx_clinical_data_points_is_normal ON clinical_data_points(is_normal);
+CREATE INDEX idx_clinical_data_points_patient_code ON clinical_data_points(patient_id, data_point_code);
 
 -- Order Set indexes
 CREATE INDEX idx_order_sets_order_set_id ON order_sets(order_set_id);

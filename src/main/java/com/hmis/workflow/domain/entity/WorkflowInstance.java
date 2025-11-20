@@ -28,7 +28,7 @@ import java.util.Set;
 @Entity
 @Table(name = "workflow_instances")
 @Data
-@EqualsAndHashCode(callSuper = true, exclude = {"patient", "template", "taskInstances", "orders", "instructions"})
+@EqualsAndHashCode(callSuper = true, exclude = {"patient", "template", "taskInstances", "orders", "instructions", "orderAdjustments"})
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
@@ -59,6 +59,23 @@ public class WorkflowInstance extends BaseEntity {
     @Column(length = 500)
     private String escalationReason;
 
+    @Column(length = 50, nullable = false)
+    @Builder.Default
+    private String reviewStatus = "PENDING_REVIEW"; // PENDING_REVIEW, IN_REVIEW, APPROVED, REJECTED, EXECUTED
+
+    @Column(length = 100)
+    private String reviewedByUser; // User who approved/rejected
+
+    @Column
+    private LocalDateTime reviewedAt; // When review was completed
+
+    @Column(columnDefinition = "TEXT")
+    private String reviewNotes; // Notes from reviewer
+
+    @Column(nullable = false, columnDefinition = "BOOLEAN DEFAULT false")
+    @Builder.Default
+    private Boolean canExecute = false; // Only true after approval
+
     @ManyToOne
     @JoinColumn(name = "patient_id", nullable = false, foreignKey = @ForeignKey(name = "fk_workflow_patient"))
     @JsonIgnore
@@ -80,6 +97,10 @@ public class WorkflowInstance extends BaseEntity {
     @OneToMany(mappedBy = "workflowInstance", orphanRemoval = true)
     @Builder.Default
     private Set<Instruction> instructions = new HashSet<>();
+
+    @OneToMany(mappedBy = "workflowInstance", orphanRemoval = true)
+    @Builder.Default
+    private Set<OrderAdjustment> orderAdjustments = new HashSet<>();
 
     public Integer getProgressPercentage() {
         if (taskInstances.isEmpty()) {

@@ -3,6 +3,7 @@ package com.hmis.workflow.domain.entity;
 import com.hmis.workflow.domain.enums.OrderStatus;
 import com.hmis.workflow.domain.enums.OrderType;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -106,6 +107,10 @@ public class Order extends BaseEntity {
     @OneToMany(mappedBy = "order", orphanRemoval = true)
     @Builder.Default
     private Set<CompensationAction> compensationActions = new HashSet<>();
+
+    @OneToMany(mappedBy = "order", orphanRemoval = true)
+    @Builder.Default
+    private Set<OrderAdjustment> adjustments = new HashSet<>();
 
     /**
      * Check if order can transition to next state
