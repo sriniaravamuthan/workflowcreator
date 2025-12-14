@@ -34,6 +34,7 @@ public class WorkflowInstanceService {
     private final PatientRepository patientRepository;
     private final TaskInstanceRepository taskRepository;
     private final TaskInstanceService taskService;
+    private final NotificationService notificationService;
 
     /**
      * Create a new workflow instance for a patient.
@@ -45,6 +46,9 @@ public class WorkflowInstanceService {
      * SLA Calculation:
      * - Entry tasks: SLA starts from workflow creation time
      * - Blocked tasks: SLA will be calculated when they become PENDING (predecessors complete)
+     *
+     * Notifications:
+     * - Entry task assignees are notified immediately upon workflow creation
      */
     public WorkflowInstance createWorkflowInstance(UUID patientId, UUID templateId) {
         Patient patient = patientRepository.findById(patientId)
@@ -103,7 +107,73 @@ public class WorkflowInstanceService {
             instance.getTaskInstances().add(taskInstance);
         });
 
-        return workflowRepository.save(instance);
+        WorkflowInstance savedInstance = workflowRepository.save(instance);
+
+        // Notify assignees of entry tasks (tasks that can start immediately)
+        notifyEntryTaskAssignees(savedInstance);
+
+        return savedInstance;
+    }
+
+    /**
+     * Notify assignees of all entry tasks in a newly created workflow.
+     * Entry tasks are tasks with no predecessors that can start immediately.
+     *
+     * @param instance The newly created workflow instance
+     */
+    private void notifyEntryTaskAssignees(WorkflowInstance instance) {
+        instance.getTaskInstances().stream()
+                .filter(task -> task.getTaskDefinition().isEntryTask())
+                .filter(task -> task.getAssignedTo() != null && !task.getAssignedTo().isEmpty())
+                .forEach(task -> {
+                    try {
+                        notifyTaskAssignment(task, instance.getPatient());
+                        log.info("Sent task assignment notification to {} for entry task {}",
+                                task.getAssignedTo(), task.getTaskDefinition().getName());
+                    } catch (Exception e) {
+                        log.error("Failed to send notification for entry task {}: {}",
+                                task.getTaskDefinition().getName(), e.getMessage());
+                    }
+                });
+    }
+
+    /**
+     * Send task assignment notification to the assigned user.
+     *
+     * @param task The task instance being assigned
+     * @param patient The patient associated with the workflow
+     */
+    private void notifyTaskAssignment(TaskInstance task, Patient patient) {
+        String subject = String.format("New Task Assigned: %s", task.getTaskDefinition().getName());
+
+        String message = String.format(
+                "You have been assigned a new task.\n\n" +
+                "Task: %s\n" +
+                "Description: %s\n" +
+                "Patient: %s %s\n" +
+                "Due Date: %s\n" +
+                "Priority: %s\n\n" +
+                "Please log in to the workflow system to view details and start the task.",
+                task.getTaskDefinition().getName(),
+                task.getTaskDefinition().getDescription() != null ?
+                        task.getTaskDefinition().getDescription() : "N/A",
+                patient.getFirstName(),
+                patient.getLastName(),
+                task.getDueAt() != null ? task.getDueAt().toString() : "Not set",
+                task.getTaskDefinition().getIsOptional() ? "Optional" : "Required"
+        );
+
+        NotificationRequest request = new NotificationRequest(
+                task.getAssignedTo(),
+                "TASK_ASSIGNMENT",
+                subject,
+                message
+        );
+        request.setTaskInstanceId(task.getId());
+        request.setWorkflowInstanceId(task.getWorkflowInstance().getId());
+        request.setPatientId(patient.getId());
+
+        notificationService.notifyUser(request);
     }
 
     /**

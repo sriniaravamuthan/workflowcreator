@@ -1,5 +1,6 @@
 package com.hmis.workflow.service;
 
+import com.hmis.workflow.domain.entity.Patient;
 import com.hmis.workflow.domain.entity.TaskInstance;
 import com.hmis.workflow.domain.entity.WorkflowInstance;
 import com.hmis.workflow.domain.enums.TaskStatus;
@@ -17,6 +18,11 @@ import java.util.UUID;
 /**
  * Service for managing task instances
  * Handles task assignment, execution, escalation, and SLA monitoring
+ *
+ * Notifications are sent for:
+ * - Task assignment (when task is explicitly assigned to a user)
+ * - Task escalation (when task is escalated to another user)
+ * - Task reassignment (when task is reassigned from one user to another)
  */
 @Service
 @RequiredArgsConstructor
@@ -26,6 +32,7 @@ public class TaskInstanceService {
 
     private final TaskInstanceRepository taskRepository;
     private final WorkflowInstanceRepository workflowRepository;
+    private final NotificationService notificationService;
 
     /**
      * Get task instance by ID
@@ -58,7 +65,12 @@ public class TaskInstanceService {
     }
 
     /**
-     * Assign task to user
+     * Assign task to user.
+     * Sends notification to the assigned user.
+     *
+     * @param taskId The task instance ID
+     * @param assignedTo The user ID to assign the task to
+     * @return The updated task instance
      */
     public TaskInstance assignTask(UUID taskId, String assignedTo) {
         TaskInstance task = getTaskInstance(taskId);
@@ -67,9 +79,19 @@ public class TaskInstanceService {
             throw new IllegalStateException("Cannot assign task not in PENDING status");
         }
 
+        String previousAssignee = task.getAssignedTo();
         task.setAssignedTo(assignedTo);
         log.info("Assigned task {} to {}", taskId, assignedTo);
-        return taskRepository.save(task);
+        TaskInstance savedTask = taskRepository.save(task);
+
+        // Notify the newly assigned user
+        if (assignedTo != null && !assignedTo.isEmpty()) {
+            boolean isReassignment = previousAssignee != null && !previousAssignee.isEmpty()
+                    && !previousAssignee.equals(assignedTo);
+            notifyTaskAssignment(savedTask, isReassignment);
+        }
+
+        return savedTask;
     }
 
     /**
@@ -160,7 +182,13 @@ public class TaskInstanceService {
     }
 
     /**
-     * Escalate task
+     * Escalate task to another user.
+     * Sends notification to the escalated user.
+     *
+     * @param taskId The task instance ID
+     * @param escalatedToUser The user ID to escalate the task to
+     * @param reason The reason for escalation
+     * @return The updated task instance
      */
     public TaskInstance escalateTask(UUID taskId, String escalatedToUser, String reason) {
         TaskInstance task = getTaskInstance(taskId);
@@ -171,7 +199,14 @@ public class TaskInstanceService {
         task.setComments((task.getComments() != null ? task.getComments() + "; " : "") + "Escalated: " + reason);
 
         log.info("Escalated task {} to {} - Reason: {}", taskId, escalatedToUser, reason);
-        return taskRepository.save(task);
+        TaskInstance savedTask = taskRepository.save(task);
+
+        // Notify the escalated user
+        if (escalatedToUser != null && !escalatedToUser.isEmpty()) {
+            notifyTaskEscalation(savedTask, reason);
+        }
+
+        return savedTask;
     }
 
     /**
@@ -227,5 +262,114 @@ public class TaskInstanceService {
         TaskInstance task = getTaskInstance(taskId);
         task.setComments(comments);
         return taskRepository.save(task);
+    }
+
+    // ========================================================================
+    // NOTIFICATION HELPER METHODS
+    // ========================================================================
+
+    /**
+     * Send task assignment notification to the assigned user.
+     *
+     * @param task The task instance being assigned
+     * @param isReassignment True if this is a reassignment from another user
+     */
+    private void notifyTaskAssignment(TaskInstance task, boolean isReassignment) {
+        try {
+            Patient patient = task.getWorkflowInstance().getPatient();
+            String actionType = isReassignment ? "reassigned" : "assigned";
+
+            String subject = String.format("Task %s: %s",
+                    isReassignment ? "Reassigned" : "Assigned",
+                    task.getTaskDefinition().getName());
+
+            String message = String.format(
+                    "You have been %s a task.\n\n" +
+                    "Task: %s\n" +
+                    "Description: %s\n" +
+                    "Patient: %s %s\n" +
+                    "Due Date: %s\n" +
+                    "Priority: %s\n\n" +
+                    "Please log in to the workflow system to view details and start the task.",
+                    actionType,
+                    task.getTaskDefinition().getName(),
+                    task.getTaskDefinition().getDescription() != null ?
+                            task.getTaskDefinition().getDescription() : "N/A",
+                    patient.getFirstName(),
+                    patient.getLastName(),
+                    task.getDueAt() != null ? task.getDueAt().toString() : "Not set",
+                    task.getTaskDefinition().getIsOptional() ? "Optional" : "Required"
+            );
+
+            NotificationRequest request = new NotificationRequest(
+                    task.getAssignedTo(),
+                    "TASK_ASSIGNMENT",
+                    subject,
+                    message
+            );
+            request.setTaskInstanceId(task.getId());
+            request.setWorkflowInstanceId(task.getWorkflowInstance().getId());
+            request.setPatientId(patient.getId());
+
+            notificationService.notifyUser(request);
+            log.info("Sent task {} notification to {} for task {}",
+                    actionType, task.getAssignedTo(), task.getTaskDefinition().getName());
+
+        } catch (Exception e) {
+            log.error("Failed to send task assignment notification for task {}: {}",
+                    task.getId(), e.getMessage());
+        }
+    }
+
+    /**
+     * Send task escalation notification to the escalated user.
+     *
+     * @param task The task instance being escalated
+     * @param reason The reason for escalation
+     */
+    private void notifyTaskEscalation(TaskInstance task, String reason) {
+        try {
+            Patient patient = task.getWorkflowInstance().getPatient();
+
+            String subject = String.format("URGENT: Task Escalated - %s",
+                    task.getTaskDefinition().getName());
+
+            String message = String.format(
+                    "A task has been escalated to you and requires immediate attention.\n\n" +
+                    "Task: %s\n" +
+                    "Description: %s\n" +
+                    "Patient: %s %s\n" +
+                    "Due Date: %s\n" +
+                    "Escalation Reason: %s\n" +
+                    "Original Assignee: %s\n\n" +
+                    "Please attend to this task immediately.",
+                    task.getTaskDefinition().getName(),
+                    task.getTaskDefinition().getDescription() != null ?
+                            task.getTaskDefinition().getDescription() : "N/A",
+                    patient.getFirstName(),
+                    patient.getLastName(),
+                    task.getDueAt() != null ? task.getDueAt().toString() : "Not set",
+                    reason,
+                    task.getAssignedTo() != null ? task.getAssignedTo() : "Not assigned"
+            );
+
+            NotificationRequest request = new NotificationRequest(
+                    task.getEscalatedToUser(),
+                    "TASK_ESCALATION",
+                    subject,
+                    message
+            );
+            request.setTaskInstanceId(task.getId());
+            request.setWorkflowInstanceId(task.getWorkflowInstance().getId());
+            request.setPatientId(patient.getId());
+
+            notificationService.notifyUser(request);
+            log.info("Sent task escalation notification to {} for task {}",
+                    task.getEscalatedToUser(), task.getTaskDefinition().getName());
+
+        } catch (Exception e) {
+            log.error("Failed to send task escalation notification for task {}: {}",
+                    task.getId(), e.getMessage());
+        }
     }
 }
