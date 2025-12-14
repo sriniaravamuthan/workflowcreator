@@ -34,4 +34,12 @@ public class TaskInstanceDTO {
     private String taskDescription;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+
+    // Ad-hoc task support
+    private Boolean isAdhoc;
+    private String createdByUser;
+
+    // Skip support
+    private String skipReason;
+    private String skippedByUser;
 }

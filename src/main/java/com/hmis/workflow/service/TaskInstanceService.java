@@ -210,20 +210,87 @@ public class TaskInstanceService {
     }
 
     /**
-     * Skip optional task
+     * Skip optional task (legacy method for backward compatibility).
+     * Use skipTaskWithReason for better tracking.
      */
     public TaskInstance skipTask(UUID taskId) {
+        return skipTaskWithReason(taskId, null, null, false);
+    }
+
+    /**
+     * Skip a task with a reason and user tracking.
+     *
+     * Supports skipping both optional and required tasks:
+     * - Optional tasks can be skipped without requiring a reason
+     * - Required tasks can only be skipped with forceSkip=true and require a reason
+     *
+     * Use cases for skipping required tasks:
+     * - Blood test already performed elsewhere
+     * - Patient refused the procedure
+     * - Clinical judgment overrides standard protocol
+     * - Task no longer applicable due to condition change
+     *
+     * @param taskId The task instance ID
+     * @param reason The reason for skipping (required for non-optional tasks)
+     * @param skippedByUser The user who is skipping the task
+     * @param forceSkip If true, allows skipping non-optional tasks (requires reason)
+     * @return The updated task instance
+     */
+    public TaskInstance skipTaskWithReason(UUID taskId, String reason, String skippedByUser, boolean forceSkip) {
         TaskInstance task = getTaskInstance(taskId);
 
-        if (!task.getTaskDefinition().getIsOptional()) {
-            throw new IllegalStateException("Cannot skip required task");
+        // Check if task can be skipped
+        if (task.getStatus() == TaskStatus.COMPLETED) {
+            throw new IllegalStateException("Cannot skip an already completed task");
         }
 
+        if (task.getStatus() == TaskStatus.SKIPPED) {
+            throw new IllegalStateException("Task is already skipped");
+        }
+
+        // Determine if task is optional
+        boolean isOptional = task.isOptional();
+
+        if (!isOptional && !forceSkip) {
+            throw new IllegalStateException(
+                    "Cannot skip required task. Use forceSkip=true with a reason to override.");
+        }
+
+        if (!isOptional && (reason == null || reason.trim().isEmpty())) {
+            throw new IllegalArgumentException(
+                    "A reason is required when skipping a required task");
+        }
+
+        // Skip the task
         task.setStatus(TaskStatus.SKIPPED);
         task.setCompletedAt(LocalDateTime.now());
+        task.setSkipReason(reason);
+        task.setSkippedByUser(skippedByUser);
 
-        log.info("Skipped optional task {}", taskId);
+        if (!isOptional) {
+            // Add audit comment for non-optional task skip
+            String auditComment = String.format("REQUIRED TASK SKIPPED by %s. Reason: %s",
+                    skippedByUser != null ? skippedByUser : "Unknown",
+                    reason);
+            task.setComments((task.getComments() != null ? task.getComments() + "; " : "") + auditComment);
+        }
+
+        log.info("Skipped {} task {} by {} - Reason: {}",
+                isOptional ? "optional" : "REQUIRED",
+                taskId,
+                skippedByUser,
+                reason);
+
         return taskRepository.save(task);
+    }
+
+    /**
+     * Get skipped tasks for a workflow
+     */
+    public List<TaskInstance> getSkippedTasks(UUID workflowInstanceId) {
+        return taskRepository.findByWorkflowInstanceId(workflowInstanceId).stream()
+                .filter(t -> t.getStatus() == TaskStatus.SKIPPED)
+                .collect(java.util.stream.Collectors.toList());
     }
 
     /**

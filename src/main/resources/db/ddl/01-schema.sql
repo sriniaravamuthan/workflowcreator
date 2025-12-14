@@ -138,10 +138,15 @@ CREATE TABLE workflow_instances (
 -- ============================================================================
 -- TASK_INSTANCES TABLE
 -- ============================================================================
+-- Supports both template-based tasks and ad-hoc tasks.
+-- Ad-hoc tasks are created dynamically at runtime by clinicians (e.g., doctor
+-- orders "administer saline") without being part of the original workflow template.
+-- ============================================================================
 CREATE TABLE task_instances (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
     workflow_instance_id VARCHAR(36) NOT NULL,
-    task_definition_id VARCHAR(36) NOT NULL,
+    -- task_definition_id is nullable for ad-hoc tasks
+    task_definition_id VARCHAR(36),
     task_instance_id VARCHAR(100) NOT NULL UNIQUE,
     status VARCHAR(50) NOT NULL,
     assigned_to VARCHAR(255),
@@ -160,6 +165,15 @@ CREATE TABLE task_instances (
     escalated_to_user VARCHAR(100),
     sla_minutes INT DEFAULT 0,
     sla_breached BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Ad-hoc task support
+    is_adhoc BOOLEAN NOT NULL DEFAULT FALSE,
+    adhoc_task_name VARCHAR(100),
+    adhoc_task_description VARCHAR(500),
+    created_by_user VARCHAR(255),
+    -- Skip support
+    skip_reason CLOB,
+    skipped_by_user VARCHAR(255),
+    -- Audit fields
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
     created_by VARCHAR(255),
@@ -497,6 +511,7 @@ CREATE INDEX idx_task_instances_assigned_to ON task_instances(assigned_to);
 CREATE INDEX idx_task_instances_due_at ON task_instances(due_at);
 CREATE INDEX idx_task_instances_sla_breached ON task_instances(sla_breached);
 CREATE INDEX idx_task_instances_is_escalated ON task_instances(is_escalated);
+CREATE INDEX idx_task_instances_is_adhoc ON task_instances(is_adhoc);
 
 -- Order indexes
 CREATE INDEX idx_orders_order_id ON orders(order_id);

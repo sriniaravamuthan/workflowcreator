@@ -19,8 +19,12 @@ import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
 
 /**
- * TaskInstance entity representing an instance of a task in a workflow
- * Supports SLA tracking, escalation, role-based assignment, and task inputs/outputs
+ * TaskInstance entity representing an instance of a task in a workflow.
+ * Supports SLA tracking, escalation, role-based assignment, task inputs/outputs,
+ * and ad-hoc tasks.
+ *
+ * Ad-hoc tasks are created dynamically at runtime by clinicians (e.g., doctor orders
+ * "administer saline") without being part of the original workflow template.
  */
 @Entity
 @Table(name = "task_instances")
@@ -87,15 +91,35 @@ public class TaskInstance extends BaseEntity {
     @Column(nullable = false, columnDefinition = "BOOLEAN DEFAULT false")
     private Boolean slaBreached = false;
 
+    // Ad-hoc Task Support
+    @Column(nullable = false, columnDefinition = "BOOLEAN DEFAULT false")
+    private Boolean isAdhoc = false; // True if this is an ad-hoc task (not from template)
+
+    @Column(length = 100)
+    private String adhocTaskName; // Name for ad-hoc tasks (when taskDefinition is null)
+
+    @Column(length = 500)
+    private String adhocTaskDescription; // Description for ad-hoc tasks
+
+    @Column(length = 255)
+    private String createdByUser; // User who created the ad-hoc task
+
+    // Skip Support
+    @Column(columnDefinition = "TEXT")
+    private String skipReason; // Reason for skipping the task
+
+    @Column(length = 255)
+    private String skippedByUser; // User who skipped the task
+
     @ManyToOne
     @JoinColumn(name = "workflow_instance_id", nullable = false, foreignKey = @ForeignKey(name = "fk_task_workflow"))
     @JsonIgnore
     private WorkflowInstance workflowInstance;
 
     @ManyToOne
-    @JoinColumn(name = "task_definition_id", nullable = false, foreignKey = @ForeignKey(name = "fk_task_definition"))
+    @JoinColumn(name = "task_definition_id", foreignKey = @ForeignKey(name = "fk_task_definition"))
     @JsonIgnore
-    private WorkflowTaskDefinition taskDefinition;
+    private WorkflowTaskDefinition taskDefinition; // Nullable for ad-hoc tasks
 
     public Boolean isRetryable() {
         return retryCount < maxRetries && TaskStatus.FAILED.equals(status);
@@ -114,5 +138,42 @@ public class TaskInstance extends BaseEntity {
         }
         long minutesRemaining = java.time.temporal.ChronoUnit.MINUTES.between(LocalDateTime.now(), dueAt);
         return (int) minutesRemaining;
+    }
+
+    /**
+     * Get the task name, whether this is a template-based task or an ad-hoc task.
+     *
+     * @return The task name from task definition, or adhocTaskName for ad-hoc tasks
+     */
+    public String getTaskName() {
+        if (Boolean.TRUE.equals(isAdhoc) || taskDefinition == null) {
+            return adhocTaskName;
+        }
+        return taskDefinition.getName();
+    }
+
+    /**
+     * Get the task description, whether this is a template-based task or an ad-hoc task.
+     *
+     * @return The task description from task definition, or adhocTaskDescription for ad-hoc tasks
+     */
+    public String getTaskDescription() {
+        if (Boolean.TRUE.equals(isAdhoc) || taskDefinition == null) {
+            return adhocTaskDescription;
+        }
+        return taskDefinition.getDescription();
+    }
+
+    /**
+     * Check if this task is optional.
+     * Ad-hoc tasks are always considered optional by default.
+     *
+     * @return true if the task is optional
+     */
+    public Boolean isOptional() {
+        if (Boolean.TRUE.equals(isAdhoc) || taskDefinition == null) {
+            return true; // Ad-hoc tasks are optional by default
+        }
+        return taskDefinition.getIsOptional();
     }
 }

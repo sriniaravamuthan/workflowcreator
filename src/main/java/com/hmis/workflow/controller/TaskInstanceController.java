@@ -179,7 +179,7 @@ public class TaskInstanceController {
     }
 
     /**
-     * Skip optional task
+     * Skip optional task (backward compatible endpoint)
      * POST /workflows/tasks/{id}/skip
      */
     @PostMapping("/{id}/skip")
@@ -190,6 +190,55 @@ public class TaskInstanceController {
         TaskInstanceDTO dto = mapToDTO(task);
 
         return ResponseEntity.ok(ApiResponse.success(dto, "Task skipped successfully"));
+    }
+
+    /**
+     * Skip task with reason and optional force flag.
+     *
+     * Supports skipping both optional and required tasks:
+     * - Optional tasks can be skipped without requiring a reason
+     * - Required tasks can only be skipped with forceSkip=true and require a reason
+     *
+     * Use cases for skipping required tasks:
+     * - Blood test already performed elsewhere
+     * - Patient refused the procedure
+     * - Clinical judgment overrides standard protocol
+     *
+     * POST /workflows/tasks/{id}/skip-with-reason
+     */
+    @PostMapping("/{id}/skip-with-reason")
+    public ResponseEntity<ApiResponse<TaskInstanceDTO>> skipTaskWithReason(
+            @PathVariable UUID id,
+            @RequestBody SkipTaskRequest request) {
+        log.info("Skipping task {} with reason: {} by user: {} (forceSkip: {})",
+                id, request.getReason(), request.getSkippedByUser(), request.isForceSkip());
+
+        TaskInstance task = taskInstanceService.skipTaskWithReason(
+                id,
+                request.getReason(),
+                request.getSkippedByUser(),
+                request.isForceSkip()
+        );
+        TaskInstanceDTO dto = mapToDTO(task);
+
+        return ResponseEntity.ok(ApiResponse.success(dto, "Task skipped successfully"));
+    }
+
+    /**
+     * Get skipped tasks for a workflow
+     * GET /workflows/tasks/workflow/{workflowInstanceId}/skipped
+     */
+    @GetMapping("/workflow/{workflowInstanceId}/skipped")
+    public ResponseEntity<ApiResponse<List<TaskInstanceDTO>>> getSkippedTasks(
+            @PathVariable UUID workflowInstanceId) {
+        log.info("Fetching skipped tasks for workflow instance: {}", workflowInstanceId);
+
+        List<TaskInstance> tasks = taskInstanceService.getSkippedTasks(workflowInstanceId);
+        List<TaskInstanceDTO> dtos = tasks.stream()
+                .map(this::mapToDTO)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(dtos, "Skipped tasks retrieved successfully"));
     }
 
     /**
@@ -256,8 +305,12 @@ public class TaskInstanceController {
                 .maxRetries(task.getMaxRetries())
                 .errorMessage(task.getErrorMessage())
                 .workflowInstanceId(task.getWorkflowInstance().getId())
-                .taskName(task.getTaskDefinition().getName())
-                .taskDescription(task.getTaskDefinition().getDescription())
+                .taskName(task.getTaskName())
+                .taskDescription(task.getTaskDescription())
+                .isAdhoc(task.getIsAdhoc())
+                .createdByUser(task.getCreatedByUser())
+                .skipReason(task.getSkipReason())
+                .skippedByUser(task.getSkippedByUser())
                 .createdAt(task.getCreatedAt())
                 .updatedAt(task.getUpdatedAt())
                 .build();
@@ -361,6 +414,36 @@ public class TaskInstanceController {
 
         public void setComments(String comments) {
             this.comments = comments;
+        }
+    }
+
+    static class SkipTaskRequest {
+        public String reason;
+        public String skippedByUser;
+        public boolean forceSkip = false;
+
+        public String getReason() {
+            return reason;
+        }
+
+        public void setReason(String reason) {
+            this.reason = reason;
+        }
+
+        public String getSkippedByUser() {
+            return skippedByUser;
+        }
+
+        public void setSkippedByUser(String skippedByUser) {
+            this.skippedByUser = skippedByUser;
+        }
+
+        public boolean isForceSkip() {
+            return forceSkip;
+        }
+
+        public void setForceSkip(boolean forceSkip) {
+            this.forceSkip = forceSkip;
         }
     }
 }

@@ -439,4 +439,137 @@ public class WorkflowInstanceService {
                 .filter(t -> t.getStatus() == TaskStatus.BLOCKED)
                 .collect(java.util.stream.Collectors.toList());
     }
+
+    // ========================================================================
+    // AD-HOC TASK MANAGEMENT
+    // ========================================================================
+
+    /**
+     * Add an ad-hoc task to a workflow instance.
+     *
+     * Ad-hoc tasks are dynamically created at runtime by clinicians (e.g., doctor orders
+     * "administer saline") that are not part of the original workflow template.
+     *
+     * Ad-hoc tasks:
+     * - Are immediately set to PENDING status (can be started right away)
+     * - Are marked as optional by default
+     * - Do not have a task definition in the template
+     * - Can have their own SLA/due date
+     *
+     * @param instanceId The workflow instance ID
+     * @param taskName The name of the ad-hoc task
+     * @param taskDescription Description of the task
+     * @param assignTo User to assign the task to
+     * @param createdByUser User creating the ad-hoc task
+     * @param slaMinutes Optional SLA in minutes (0 or null for no SLA)
+     * @return The created ad-hoc task instance
+     */
+    public TaskInstance addAdhocTask(UUID instanceId, String taskName, String taskDescription,
+                                     String assignTo, String createdByUser, Integer slaMinutes) {
+        WorkflowInstance instance = getWorkflowInstance(instanceId);
+
+        if (instance.getStatus() != WorkflowStatus.ACTIVE) {
+            throw new IllegalStateException("Cannot add ad-hoc task to non-active workflow");
+        }
+
+        if (taskName == null || taskName.trim().isEmpty()) {
+            throw new IllegalArgumentException("Ad-hoc task name is required");
+        }
+
+        // Create the ad-hoc task instance
+        TaskInstance adhocTask = new TaskInstance();
+        adhocTask.setTaskInstanceId(UUID.randomUUID().toString());
+        adhocTask.setWorkflowInstance(instance);
+        adhocTask.setTaskDefinition(null); // No template definition
+        adhocTask.setIsAdhoc(true);
+        adhocTask.setAdhocTaskName(taskName.trim());
+        adhocTask.setAdhocTaskDescription(taskDescription);
+        adhocTask.setAssignedTo(assignTo);
+        adhocTask.setRequiredRole(assignTo);
+        adhocTask.setCreatedByUser(createdByUser);
+        adhocTask.setStatus(TaskStatus.PENDING); // Ready to start immediately
+        adhocTask.setMaxRetries(3);
+        adhocTask.setRetryCount(0);
+
+        // Set SLA if provided
+        if (slaMinutes != null && slaMinutes > 0) {
+            adhocTask.setSlaMinutes(slaMinutes);
+            adhocTask.setDueAt(LocalDateTime.now().plusMinutes(slaMinutes));
+        }
+
+        instance.getTaskInstances().add(adhocTask);
+        TaskInstance savedTask = taskRepository.save(adhocTask);
+        workflowRepository.save(instance);
+
+        log.info("Added ad-hoc task '{}' to workflow {} by user {}",
+                taskName, instanceId, createdByUser);
+
+        // Notify the assigned user
+        if (assignTo != null && !assignTo.isEmpty()) {
+            notifyAdhocTaskAssignment(savedTask, instance.getPatient());
+        }
+
+        return savedTask;
+    }
+
+    /**
+     * Send notification for ad-hoc task assignment.
+     *
+     * @param task The ad-hoc task instance
+     * @param patient The patient associated with the workflow
+     */
+    private void notifyAdhocTaskAssignment(TaskInstance task, Patient patient) {
+        try {
+            String subject = String.format("New Ad-hoc Task Assigned: %s", task.getAdhocTaskName());
+
+            String message = String.format(
+                    "You have been assigned a new ad-hoc task.\n\n" +
+                    "Task: %s\n" +
+                    "Description: %s\n" +
+                    "Patient: %s %s\n" +
+                    "Due Date: %s\n" +
+                    "Created By: %s\n\n" +
+                    "This is a clinician-ordered task that requires immediate attention.\n" +
+                    "Please log in to the workflow system to view details and start the task.",
+                    task.getAdhocTaskName(),
+                    task.getAdhocTaskDescription() != null ? task.getAdhocTaskDescription() : "N/A",
+                    patient.getFirstName(),
+                    patient.getLastName(),
+                    task.getDueAt() != null ? task.getDueAt().toString() : "Not set",
+                    task.getCreatedByUser() != null ? task.getCreatedByUser() : "Unknown"
+            );
+
+            NotificationRequest request = new NotificationRequest(
+                    task.getAssignedTo(),
+                    "ADHOC_TASK_ASSIGNMENT",
+                    subject,
+                    message
+            );
+            request.setTaskInstanceId(task.getId());
+            request.setWorkflowInstanceId(task.getWorkflowInstance().getId());
+            request.setPatientId(patient.getId());
+
+            notificationService.notifyUser(request);
+            log.info("Sent ad-hoc task assignment notification to {} for task {}",
+                    task.getAssignedTo(), task.getAdhocTaskName());
+
+        } catch (Exception e) {
+            log.error("Failed to send ad-hoc task assignment notification for task {}: {}",
+                    task.getId(), e.getMessage());
+        }
+    }
+
+    /**
+     * Get all ad-hoc tasks for a workflow instance.
+     *
+     * @param instanceId The workflow instance ID
+     * @return List of ad-hoc task instances
+     */
+    public List<TaskInstance> getAdhocTasks(UUID instanceId) {
+        WorkflowInstance instance = getWorkflowInstance(instanceId);
+
+        return instance.getTaskInstances().stream()
+                .filter(t -> Boolean.TRUE.equals(t.getIsAdhoc()))
+                .collect(java.util.stream.Collectors.toList());
+    }
 }

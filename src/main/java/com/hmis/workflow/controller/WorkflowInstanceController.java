@@ -1,7 +1,9 @@
 package com.hmis.workflow.controller;
 
+import com.hmis.workflow.domain.entity.TaskInstance;
 import com.hmis.workflow.domain.entity.WorkflowInstance;
 import com.hmis.workflow.dto.ApiResponse;
+import com.hmis.workflow.dto.TaskInstanceDTO;
 import com.hmis.workflow.dto.WorkflowInstanceDTO;
 import com.hmis.workflow.service.WorkflowInstanceService;
 import lombok.RequiredArgsConstructor;
@@ -191,6 +193,54 @@ public class WorkflowInstanceController {
         return ResponseEntity.ok(ApiResponse.success(dto, "Workflow escalated successfully"));
     }
 
+    // ==================== Ad-hoc Task Endpoints ====================
+
+    /**
+     * Add an ad-hoc task to a workflow instance.
+     *
+     * Ad-hoc tasks are dynamically created tasks not in the original template,
+     * such as when a doctor orders "administer saline" during treatment.
+     *
+     * POST /workflows/instances/{id}/adhoc-task
+     */
+    @PostMapping("/{id}/adhoc-task")
+    public ResponseEntity<ApiResponse<TaskInstanceDTO>> addAdhocTask(
+            @PathVariable UUID id,
+            @RequestBody AddAdhocTaskRequest request) {
+        log.info("Adding ad-hoc task '{}' to workflow instance: {} by user: {}",
+                request.getTaskName(), id, request.getCreatedByUser());
+
+        com.hmis.workflow.domain.entity.TaskInstance task = workflowInstanceService.addAdhocTask(
+                id,
+                request.getTaskName(),
+                request.getTaskDescription(),
+                request.getAssignTo(),
+                request.getCreatedByUser(),
+                request.getSlaMinutes()
+        );
+
+        TaskInstanceDTO dto = mapTaskToDTO(task);
+
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.success(dto, "Ad-hoc task created successfully"));
+    }
+
+    /**
+     * Get all ad-hoc tasks for a workflow instance
+     * GET /workflows/instances/{id}/adhoc-tasks
+     */
+    @GetMapping("/{id}/adhoc-tasks")
+    public ResponseEntity<ApiResponse<List<TaskInstanceDTO>>> getAdhocTasks(@PathVariable UUID id) {
+        log.info("Fetching ad-hoc tasks for workflow instance: {}", id);
+
+        List<com.hmis.workflow.domain.entity.TaskInstance> tasks = workflowInstanceService.getAdhocTasks(id);
+        List<TaskInstanceDTO> dtos = tasks.stream()
+                .map(this::mapTaskToDTO)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(dtos, "Ad-hoc tasks retrieved successfully"));
+    }
+
     // ==================== Helper Methods ====================
 
     private WorkflowInstanceDTO mapToDTO(WorkflowInstance instance) {
@@ -208,6 +258,28 @@ public class WorkflowInstanceController {
                 .progressPercentage(instance.getProgressPercentage())
                 .createdAt(instance.getCreatedAt())
                 .updatedAt(instance.getUpdatedAt())
+                .build();
+    }
+
+    private TaskInstanceDTO mapTaskToDTO(TaskInstance task) {
+        return TaskInstanceDTO.builder()
+                .id(task.getId())
+                .taskInstanceId(task.getTaskInstanceId())
+                .status(task.getStatus())
+                .assignedTo(task.getAssignedTo())
+                .startedAt(task.getStartedAt())
+                .completedAt(task.getCompletedAt())
+                .comments(task.getComments())
+                .result(task.getResult())
+                .retryCount(task.getRetryCount())
+                .maxRetries(task.getMaxRetries())
+                .errorMessage(task.getErrorMessage())
+                .workflowInstanceId(task.getWorkflowInstance().getId())
+                .taskName(task.getTaskName())
+                .taskDescription(task.getTaskDescription())
+                .isAdhoc(task.getIsAdhoc())
+                .createdAt(task.getCreatedAt())
+                .updatedAt(task.getUpdatedAt())
                 .build();
     }
 
@@ -255,6 +327,54 @@ public class WorkflowInstanceController {
 
         public void setReason(String reason) {
             this.reason = reason;
+        }
+    }
+
+    static class AddAdhocTaskRequest {
+        public String taskName;
+        public String taskDescription;
+        public String assignTo;
+        public String createdByUser;
+        public Integer slaMinutes;
+
+        public String getTaskName() {
+            return taskName;
+        }
+
+        public void setTaskName(String taskName) {
+            this.taskName = taskName;
+        }
+
+        public String getTaskDescription() {
+            return taskDescription;
+        }
+
+        public void setTaskDescription(String taskDescription) {
+            this.taskDescription = taskDescription;
+        }
+
+        public String getAssignTo() {
+            return assignTo;
+        }
+
+        public void setAssignTo(String assignTo) {
+            this.assignTo = assignTo;
+        }
+
+        public String getCreatedByUser() {
+            return createdByUser;
+        }
+
+        public void setCreatedByUser(String createdByUser) {
+            this.createdByUser = createdByUser;
+        }
+
+        public Integer getSlaMinutes() {
+            return slaMinutes;
+        }
+
+        public void setSlaMinutes(Integer slaMinutes) {
+            this.slaMinutes = slaMinutes;
         }
     }
 }

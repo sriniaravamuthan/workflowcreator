@@ -29,6 +29,8 @@ mvn spring-boot:run
 - Task assignment, escalation, and SLA tracking
 - Retry logic and failure compensation
 - **Optional predecessor dependencies** (see Task Dependency Model below)
+- **Ad-hoc task creation** for clinician-ordered tasks during workflow execution
+- **Flexible task skipping** with reason tracking and required task override
 
 ✅ **Event-Driven Architecture**
 - Kafka-based event publishing for all state changes
@@ -118,6 +120,73 @@ Dependent Tasks: BLOCKED → PENDING → IN_PROGRESS → COMPLETED
 - **SLA Calculation**: SLA timer starts when task becomes PENDING (not workflow start)
 - **Backward Compatible**: Legacy `nextTaskId` still works alongside predecessors
 
+## Ad-hoc Tasks
+
+The workflow engine supports **ad-hoc tasks** - dynamically created tasks not in the original template:
+
+### Use Cases
+
+- Doctor orders additional procedure (e.g., "Administer Saline")
+- Nurse adds a task based on patient condition
+- Clinical judgment requires extra steps
+
+### API Endpoint
+
+```http
+POST /workflows/instances/{instanceId}/adhoc-task
+{
+  "taskName": "Administer Saline",
+  "taskDescription": "IV saline solution 500ml over 2 hours",
+  "assignTo": "nurse-001",
+  "createdByUser": "doctor-smith",
+  "slaMinutes": 60
+}
+```
+
+### Key Features
+
+- **Immediate Availability**: Ad-hoc tasks start in PENDING status
+- **Optional by Default**: Ad-hoc tasks are treated as optional
+- **Full Tracking**: Creator, assignee, and SLA are tracked
+- **Notifications**: Assigned user receives notification
+- **Audit Trail**: Full audit logging of ad-hoc task creation
+
+## Task Skip Functionality
+
+The workflow engine supports **skipping tasks** with comprehensive tracking:
+
+### Skip Types
+
+| Type | Condition | Reason Required | API |
+|------|-----------|-----------------|-----|
+| **Optional Task** | `isOptional = true` | No | `POST /workflows/tasks/{id}/skip` |
+| **Required Task** | `forceSkip = true` | Yes | `POST /workflows/tasks/{id}/skip-with-reason` |
+
+### Use Cases for Skipping Required Tasks
+
+- Blood test already performed at another facility
+- Patient refused the procedure
+- Clinical judgment overrides standard protocol
+- Task no longer applicable due to condition change
+
+### API Endpoint
+
+```http
+POST /workflows/tasks/{taskId}/skip-with-reason
+{
+  "reason": "Blood test already performed at external lab - results attached",
+  "skippedByUser": "doctor-jones",
+  "forceSkip": true
+}
+```
+
+### Key Features
+
+- **Reason Tracking**: Skip reason is stored for audit
+- **User Attribution**: Who skipped the task is recorded
+- **Audit Comments**: Required task skips add audit comment
+- **Workflow Progression**: Skipped tasks unblock dependent tasks (like COMPLETED)
+
 ## Implementation Status
 
 ### ✅ Completed
@@ -142,19 +211,21 @@ Dependent Tasks: BLOCKED → PENDING → IN_PROGRESS → COMPLETED
 
 ## REST API Endpoints for UI Development
 
-Complete REST API with 44 endpoints:
+Complete REST API with 48 endpoints:
 
 | Component | Count | Path |
 |-----------|-------|------|
 | Workflow Templates | 15 | `/workflows/templates/*` |
-| Workflow Instances | 6 | `/workflows/instances/*` |
-| Task Instances | 12 | `/workflows/tasks/*` |
+| Workflow Instances | 8 | `/workflows/instances/*` |
+| Task Instances | 14 | `/workflows/tasks/*` |
 | Orders | 11 | `/workflows/orders/*` |
 
 **Key Capabilities:**
 - Create, manage, and publish workflow templates
 - Create patient workflow instances with automatic task generation
+- **Add ad-hoc tasks to running workflows** (doctor-ordered tasks)
 - Assign and execute individual tasks with SLA tracking
+- **Skip tasks with reason tracking** (supports required task override)
 - Manage orders through 8-state lifecycle
 - Handle task/workflow escalation and failures
 - Auto-create compensation actions on order cancellation
