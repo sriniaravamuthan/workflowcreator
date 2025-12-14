@@ -168,6 +168,9 @@ public class WorkflowTemplateService {
             newTask.setInstructions(task.getInstructions());
             newTask.setIsParallel(task.getIsParallel());
             newTask.setIsOptional(task.getIsOptional());
+            newTask.setPredecessorTaskIds(task.getPredecessorTaskIds());
+            newTask.setNextTaskId(task.getNextTaskId());
+            newTask.setFailureTaskId(task.getFailureTaskId());
             newTask.setTemplate(newVersion);
             newVersion.getTasks().add(newTask);
         }

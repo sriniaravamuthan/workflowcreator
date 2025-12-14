@@ -16,11 +16,19 @@ import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
  * Kafka event consumer for task lifecycle events.
  * Automatically processes task events and triggers next task progression.
+ *
+ * Task Propagation Modes:
+ * 1. Predecessor-based: Tasks with predecessorTaskIds are unblocked when all predecessors complete
+ * 2. Successor-based: Tasks with nextTaskId are explicitly activated (legacy support)
+ *
+ * Entry tasks (no predecessors) start immediately when workflow begins.
+ * Tasks with predecessors remain BLOCKED until all predecessors complete.
  */
 @Service
 @RequiredArgsConstructor
@@ -70,8 +78,14 @@ public class TaskEventConsumer {
     }
 
     /**
-     * Handles task completion event
-     * Triggers propagation to the next task in the workflow
+     * Handles task completion event.
+     *
+     * Task Propagation Logic:
+     * 1. Predecessor-based (primary): Unblock any tasks that have this task as a predecessor
+     * 2. Successor-based (legacy): Activate nextTaskId if defined
+     *
+     * This dual approach ensures backward compatibility while supporting the new
+     * predecessor-based dependency model.
      */
     private void handleTaskCompleted(TaskEvent event) {
         log.info("Processing TASK_COMPLETED event for task: {}", event.getTaskInstanceId());
@@ -105,19 +119,52 @@ public class TaskEventConsumer {
                 return;
             }
 
+            // Get the completed task's definition ID
+            String completedTaskDefId = completedTask.getTaskDefinition().getId().toString();
+
+            // PRIMARY: Predecessor-based unblocking
+            // Unblock any tasks that have this completed task as a predecessor
+            List<TaskInstance> unblockedTasks = workflowInstanceService.unblockReadyTasks(
+                    workflowInstanceId, completedTaskDefId);
+
+            if (!unblockedTasks.isEmpty()) {
+                log.info("Unblocked {} tasks after completion of task: {}",
+                        unblockedTasks.size(), completedTask.getTaskDefinition().getName());
+
+                // Notify assignees of newly available tasks
+                for (TaskInstance unblocked : unblockedTasks) {
+                    if (unblocked.getAssignedTo() != null) {
+                        notifyTaskAssignment(unblocked, unblocked.getAssignedTo());
+                    }
+                }
+            }
+
+            // LEGACY: Successor-based propagation (for backward compatibility)
             // Propagate to next task if defined in task definition
             if (completedTask.getTaskDefinition() != null &&
                     completedTask.getTaskDefinition().getNextTaskId() != null) {
 
-                UUID nextTaskId = completedTask.getTaskDefinition().getNextTaskId();
-                TaskInstance nextTask = taskInstanceService.getTaskInstance(nextTaskId);
+                String nextTaskDefId = completedTask.getTaskDefinition().getNextTaskId();
+                log.info("Legacy nextTaskId defined: {} after completion of task: {}",
+                        nextTaskDefId, taskInstanceId);
 
-                if (nextTask != null) {
-                    log.info("Triggering next task: {} after completion of task: {}",
-                            nextTaskId, taskInstanceId);
-                    // Next task is now ready to be started
-                    // In a real system, this might trigger auto-assignment or notifications
-                }
+                // Find the task instance for this definition
+                workflow.getTaskInstances().stream()
+                        .filter(t -> t.getTaskDefinition().getId().toString().equals(nextTaskDefId))
+                        .filter(t -> t.getStatus() == TaskStatus.BLOCKED)
+                        .findFirst()
+                        .ifPresent(nextTask -> {
+                            // Check if all predecessors are complete before unblocking
+                            if (workflowInstanceService.canUnblockTask(nextTask)) {
+                                nextTask.setStatus(TaskStatus.PENDING);
+                                if (nextTask.getSlaMinutes() != null && nextTask.getSlaMinutes() > 0) {
+                                    nextTask.setDueAt(java.time.LocalDateTime.now()
+                                            .plusMinutes(nextTask.getSlaMinutes()));
+                                }
+                                log.info("Activated next task via nextTaskId: {}",
+                                        nextTask.getTaskDefinition().getName());
+                            }
+                        });
             }
 
             // Update workflow status - check if all tasks are done

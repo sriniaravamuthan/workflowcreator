@@ -36,7 +36,15 @@ public class WorkflowInstanceService {
     private final TaskInstanceService taskService;
 
     /**
-     * Create a new workflow instance for a patient
+     * Create a new workflow instance for a patient.
+     *
+     * Task Status Assignment:
+     * - Entry tasks (no predecessors): Set to PENDING - can be started immediately
+     * - Tasks with predecessors: Set to BLOCKED - will become PENDING when all predecessors complete
+     *
+     * SLA Calculation:
+     * - Entry tasks: SLA starts from workflow creation time
+     * - Blocked tasks: SLA will be calculated when they become PENDING (predecessors complete)
      */
     public WorkflowInstance createWorkflowInstance(UUID patientId, UUID templateId) {
         Patient patient = patientRepository.findById(patientId)
@@ -64,15 +72,32 @@ public class WorkflowInstanceService {
             taskInstance.setTaskInstanceId(UUID.randomUUID().toString());
             taskInstance.setWorkflowInstance(instance);
             taskInstance.setTaskDefinition(taskDef);
-            taskInstance.setStatus(TaskStatus.PENDING);
             taskInstance.setAssignedTo(taskDef.getAssignTo());
             taskInstance.setRequiredRole(taskDef.getAssignTo());
             taskInstance.setMaxRetries(3);
 
-            // Set SLA
-            if (taskDef.getEstimatedDurationMinutes() > 0) {
-                taskInstance.setSlaMinutes(taskDef.getEstimatedDurationMinutes());
-                taskInstance.setDueAt(LocalDateTime.now().plusMinutes(taskDef.getEstimatedDurationMinutes()));
+            // Determine initial status based on predecessors
+            if (taskDef.isEntryTask()) {
+                // Entry task (no predecessors) - can start immediately
+                taskInstance.setStatus(TaskStatus.PENDING);
+                log.debug("Task {} is an entry task, setting to PENDING", taskDef.getName());
+
+                // Set SLA for entry tasks from now
+                if (taskDef.getEstimatedDurationMinutes() > 0) {
+                    taskInstance.setSlaMinutes(taskDef.getEstimatedDurationMinutes());
+                    taskInstance.setDueAt(LocalDateTime.now().plusMinutes(taskDef.getEstimatedDurationMinutes()));
+                }
+            } else {
+                // Task has predecessors - must wait for them to complete
+                taskInstance.setStatus(TaskStatus.BLOCKED);
+                log.debug("Task {} has predecessors {}, setting to BLOCKED",
+                        taskDef.getName(), taskDef.getPredecessorTaskIds());
+
+                // SLA will be set when task becomes PENDING (predecessors complete)
+                if (taskDef.getEstimatedDurationMinutes() > 0) {
+                    taskInstance.setSlaMinutes(taskDef.getEstimatedDurationMinutes());
+                    // dueAt will be calculated when task is unblocked
+                }
             }
 
             instance.getTaskInstances().add(taskInstance);
@@ -215,6 +240,10 @@ public class WorkflowInstanceService {
                 .filter(t -> t.getStatus() == TaskStatus.FAILED)
                 .count();
 
+        long skippedTasks = instance.getTaskInstances().stream()
+                .filter(t -> t.getStatus() == TaskStatus.SKIPPED)
+                .count();
+
         // If any required task failed, mark workflow as failed
         boolean requiredTaskFailed = instance.getTaskInstances().stream()
                 .filter(t -> !t.getTaskDefinition().getIsOptional())
@@ -226,11 +255,118 @@ public class WorkflowInstanceService {
             return workflowRepository.save(instance);
         }
 
-        // Check if all tasks are done
-        if (completedTasks + failedTasks == instance.getTaskInstances().size()) {
+        // Check if all tasks are done (completed, failed, or skipped)
+        long totalDone = completedTasks + failedTasks + skippedTasks;
+        if (totalDone == instance.getTaskInstances().size()) {
             return completeWorkflow(instanceId);
         }
 
         return instance;
+    }
+
+    /**
+     * Unblock tasks whose predecessors have all completed.
+     * Called after a task is completed to check if any blocked tasks can now proceed.
+     *
+     * @param instanceId The workflow instance ID
+     * @param completedTaskDefId The task definition ID of the just-completed task
+     * @return List of task instances that were unblocked
+     */
+    public List<TaskInstance> unblockReadyTasks(UUID instanceId, String completedTaskDefId) {
+        WorkflowInstance instance = getWorkflowInstance(instanceId);
+
+        // Get all completed task definition IDs
+        java.util.Set<String> completedTaskDefIds = instance.getTaskInstances().stream()
+                .filter(t -> t.getStatus() == TaskStatus.COMPLETED || t.getStatus() == TaskStatus.SKIPPED)
+                .map(t -> t.getTaskDefinition().getId().toString())
+                .collect(java.util.stream.Collectors.toSet());
+
+        List<TaskInstance> unblockedTasks = new java.util.ArrayList<>();
+
+        // Check each blocked task to see if all its predecessors are completed
+        instance.getTaskInstances().stream()
+                .filter(t -> t.getStatus() == TaskStatus.BLOCKED)
+                .forEach(blockedTask -> {
+                    List<String> predecessors = blockedTask.getTaskDefinition().getPredecessorTaskIdList();
+
+                    // Check if all predecessors are completed
+                    boolean allPredecessorsComplete = predecessors.stream()
+                            .allMatch(completedTaskDefIds::contains);
+
+                    if (allPredecessorsComplete) {
+                        // Unblock this task
+                        blockedTask.setStatus(TaskStatus.PENDING);
+
+                        // Set SLA now that task is unblocked
+                        if (blockedTask.getSlaMinutes() != null && blockedTask.getSlaMinutes() > 0) {
+                            blockedTask.setDueAt(LocalDateTime.now().plusMinutes(blockedTask.getSlaMinutes()));
+                        }
+
+                        taskRepository.save(blockedTask);
+                        unblockedTasks.add(blockedTask);
+
+                        log.info("Unblocked task {} (all predecessors completed)",
+                                blockedTask.getTaskDefinition().getName());
+                    }
+                });
+
+        return unblockedTasks;
+    }
+
+    /**
+     * Check if a specific task can be unblocked (all predecessors completed).
+     *
+     * @param taskInstance The task instance to check
+     * @return true if the task can be unblocked (all predecessors are completed)
+     */
+    public boolean canUnblockTask(TaskInstance taskInstance) {
+        if (taskInstance.getStatus() != TaskStatus.BLOCKED) {
+            return false;
+        }
+
+        WorkflowInstance instance = taskInstance.getWorkflowInstance();
+        List<String> predecessors = taskInstance.getTaskDefinition().getPredecessorTaskIdList();
+
+        if (predecessors.isEmpty()) {
+            // No predecessors - should not be blocked, can unblock
+            return true;
+        }
+
+        // Get all completed task definition IDs
+        java.util.Set<String> completedTaskDefIds = instance.getTaskInstances().stream()
+                .filter(t -> t.getStatus() == TaskStatus.COMPLETED || t.getStatus() == TaskStatus.SKIPPED)
+                .map(t -> t.getTaskDefinition().getId().toString())
+                .collect(java.util.stream.Collectors.toSet());
+
+        // Check if all predecessors are completed
+        return predecessors.stream().allMatch(completedTaskDefIds::contains);
+    }
+
+    /**
+     * Get all entry tasks (tasks with no predecessors) for a workflow instance.
+     *
+     * @param instanceId The workflow instance ID
+     * @return List of entry task instances
+     */
+    public List<TaskInstance> getEntryTasks(UUID instanceId) {
+        WorkflowInstance instance = getWorkflowInstance(instanceId);
+
+        return instance.getTaskInstances().stream()
+                .filter(t -> t.getTaskDefinition().isEntryTask())
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Get all blocked tasks for a workflow instance.
+     *
+     * @param instanceId The workflow instance ID
+     * @return List of blocked task instances
+     */
+    public List<TaskInstance> getBlockedTasks(UUID instanceId) {
+        WorkflowInstance instance = getWorkflowInstance(instanceId);
+
+        return instance.getTaskInstances().stream()
+                .filter(t -> t.getStatus() == TaskStatus.BLOCKED)
+                .collect(java.util.stream.Collectors.toList());
     }
 }

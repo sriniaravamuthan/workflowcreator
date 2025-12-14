@@ -51,6 +51,13 @@ CREATE TABLE workflow_templates (
 -- ============================================================================
 -- WORKFLOW_TASK_DEFINITIONS TABLE
 -- ============================================================================
+-- Task Dependency Model:
+-- - predecessor_task_ids: Comma-separated list of task definition IDs that must
+--   complete before this task can start. If NULL or empty, this is an "entry task"
+--   that starts immediately when the workflow begins.
+-- - next_task_id: Legacy successor-based chaining (optional).
+-- - failure_task_id: Task to activate if this task fails.
+-- ============================================================================
 CREATE TABLE workflow_task_definitions (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
     template_id VARCHAR(36) NOT NULL,
@@ -62,6 +69,9 @@ CREATE TABLE workflow_task_definitions (
     instructions CLOB,
     is_parallel BOOLEAN NOT NULL DEFAULT FALSE,
     is_optional BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Predecessor task IDs (comma-separated). NULL or empty = entry task (starts immediately)
+    predecessor_task_ids CLOB,
+    -- Legacy: Next task to activate (consider using predecessor_task_ids instead)
     next_task_id VARCHAR(100),
     failure_task_id VARCHAR(100),
     metadata CLOB,

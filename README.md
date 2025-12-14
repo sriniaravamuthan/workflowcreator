@@ -28,6 +28,7 @@ mvn spring-boot:run
 - 8-state order lifecycle (Proposed → Closed/Cancelled)
 - Task assignment, escalation, and SLA tracking
 - Retry logic and failure compensation
+- **Optional predecessor dependencies** (see Task Dependency Model below)
 
 ✅ **Event-Driven Architecture**
 - Kafka-based event publishing for all state changes
@@ -63,6 +64,59 @@ src/main/java/com/hmis/workflow/
 - Hibernate/JPA
 - Apache Kafka
 - Maven
+
+## Task Dependency Model
+
+The workflow engine supports **flexible task dependencies** with optional predecessors:
+
+### Dependency Types
+
+| Type | Description | predecessorTaskIds | Behavior |
+|------|-------------|-------------------|----------|
+| **Entry Task** | No predecessors | `null` or `[]` | Starts immediately when workflow begins |
+| **Dependent Task** | Has predecessors | `["task-1", "task-2"]` | Waits until ALL predecessors complete |
+
+### Task Status Flow
+
+```
+Entry Tasks:    PENDING → IN_PROGRESS → COMPLETED
+                  ↓
+Dependent Tasks: BLOCKED → PENDING → IN_PROGRESS → COMPLETED
+                            (when predecessors complete)
+```
+
+### Example Workflow
+
+```json
+{
+  "tasks": [
+    {
+      "name": "Initial Assessment",
+      "predecessorTaskIds": null       // Entry task - starts immediately
+    },
+    {
+      "name": "Lab Order",
+      "predecessorTaskIds": null       // Entry task - runs in parallel
+    },
+    {
+      "name": "Review Results",
+      "predecessorTaskIds": ["task-1", "task-2"]  // Waits for both to complete
+    },
+    {
+      "name": "Discharge Planning",
+      "predecessorTaskIds": ["task-3"]  // Waits for Review Results
+    }
+  ]
+}
+```
+
+### Key Features
+
+- **Optional Predecessors**: Tasks without predecessors are entry points
+- **Multiple Predecessors**: Supports AND-join (all predecessors must complete)
+- **Automatic Unblocking**: When predecessors complete, dependent tasks become PENDING
+- **SLA Calculation**: SLA timer starts when task becomes PENDING (not workflow start)
+- **Backward Compatible**: Legacy `nextTaskId` still works alongside predecessors
 
 ## Implementation Status
 
