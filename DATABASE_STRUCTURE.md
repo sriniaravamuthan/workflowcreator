@@ -142,7 +142,7 @@ ORDER BY task_order;
 
 ### 4. WORKFLOW_INSTANCES (Workflow Execution)
 ```
-Columns: 15
+Columns: 17
 Primary Key: id (UUID)
 Unique Keys: workflow_instance_id
 Foreign Keys: patient_id, template_id
@@ -153,11 +153,28 @@ Foreign Keys: patient_id, template_id
 - `workflow_instance_id`: Unique instance identifier
 - `patient_id`: Associated patient
 - `template_id`: Template this instance was created from
+- `encounter_id`: Clinical encounter ID (e.g., ER visit, admission) - for workflow isolation
+- `visit_id`: ADT visit tracking ID - for integration with ADT systems
 - `status`: ACTIVE, PAUSED, COMPLETED, FAILED, CANCELLED
 - `started_at`: Workflow start time
 - `completed_at`: Workflow completion time
 - `is_escalated`: Boolean for escalation status
 - `escalation_reason`: Reason for escalation
+- `review_status`: PENDING_REVIEW, IN_REVIEW, APPROVED, REJECTED, EXECUTED
+- `can_execute`: Boolean, only true after approval
+
+**Clinical Context (Patient + Encounter + Visit)**:
+```
+Uniqueness Validation:
+- Only ONE active workflow per patient + encounter + template combination
+- Prevents duplicate protocol execution for the same clinical context
+- Completed/cancelled/failed workflows don't block new creation
+
+Use Cases:
+- Patient admitted (ENC-001) → Start Admission Protocol ✓
+- Same patient, different ER visit (ENC-002) → Can start another ✓
+- Trying to start duplicate for ENC-001 → ERROR: "Active workflow exists"
+```
 
 **Status Transitions**:
 ```
@@ -173,8 +190,11 @@ ACTIVE ─┤    ↓       └─→ COMPLETED
 - `idx_workflow_instances_workflow_instance_id` - Lookup by instance ID
 - `idx_workflow_instances_patient_id` - Find patient workflows
 - `idx_workflow_instances_status` - Filter by status
+- `idx_workflow_instances_encounter_id` - Find by encounter
+- `idx_workflow_instances_visit_id` - Find by visit
 - `idx_workflow_instances_is_escalated` - Find escalated workflows
 - `idx_workflow_instances_created_at` - Time-based queries
+- `idx_workflow_instances_patient_encounter_template` - Composite index for uniqueness check
 
 **Relationships**:
 - Patients (M:1) - Many instances per patient
@@ -190,6 +210,17 @@ ACTIVE ─┤    ↓       └─→ COMPLETED
 SELECT * FROM workflow_instances
 WHERE patient_id = 'patient-001' AND status = 'ACTIVE';
 
+-- Get workflows for a specific encounter
+SELECT * FROM workflow_instances
+WHERE encounter_id = 'ENC-2024-001';
+
+-- Check for duplicate before creating (service layer does this)
+SELECT * FROM workflow_instances
+WHERE patient_id = 'patient-001'
+  AND encounter_id = 'ENC-001'
+  AND template_id = 'template-001'
+  AND status NOT IN ('COMPLETED', 'CANCELLED', 'FAILED');
+
 -- Get all escalated workflows
 SELECT * FROM workflow_instances
 WHERE is_escalated = TRUE;
@@ -204,15 +235,16 @@ WHERE status = 'COMPLETED'
 
 ### 5. TASK_INSTANCES (Task Execution)
 ```
-Columns: 24
+Columns: 30
 Primary Key: id (UUID)
 Unique Keys: task_instance_id
-Foreign Keys: workflow_instance_id, task_definition_id
+Foreign Keys: workflow_instance_id, task_definition_id (nullable for ad-hoc tasks)
 ```
-**Purpose**: Store individual task executions within workflow instances
+**Purpose**: Store individual task executions within workflow instances, including ad-hoc tasks
 
 **Key Columns**:
 - `task_instance_id`: Unique task execution identifier
+- `task_definition_id`: Task definition ID (NULL for ad-hoc tasks)
 - `status`: PENDING, IN_PROGRESS, COMPLETED, FAILED, SKIPPED, BLOCKED
 - `assigned_to`: User assigned to task
 - `required_role`: Role required to complete
@@ -227,13 +259,50 @@ Foreign Keys: workflow_instance_id, task_definition_id
 - `is_escalated`: Boolean for escalation
 - `escalated_to_user`: User escalated to
 
+**Ad-hoc Task Columns** (for dynamically created tasks):
+- `is_adhoc`: Boolean flag for ad-hoc tasks
+- `adhoc_task_name`: Task name (when no task definition)
+- `adhoc_task_description`: Task description (when no task definition)
+- `created_by_user`: User who created the ad-hoc task
+
+**Skip Tracking Columns**:
+- `skip_reason`: Reason for skipping the task
+- `skipped_by_user`: User who skipped the task
+
+**Ad-hoc Tasks**:
+```
+Ad-hoc tasks are dynamically created during workflow execution:
+- Doctor orders "Administer Saline" mid-workflow
+- No task definition in template (task_definition_id = NULL)
+- Start in PENDING status immediately
+- Treated as optional by default
+- Full audit tracking: who created, when, why
+```
+
+**Skip Functionality**:
+```
+Optional Tasks: Can be skipped without reason
+Required Tasks: Can be skipped with forceSkip=true AND reason
+
+Skip Types:
+- Optional task skip: No reason required
+- Required task skip: Reason + audit comment mandatory
+
+Use Cases:
+- Blood test already performed elsewhere
+- Patient refused procedure
+- Clinical judgment override
+- Task no longer applicable
+```
+
 **Status Lifecycle**:
 ```
 PENDING → (assign) → IN_PROGRESS → (complete) → COMPLETED
   ↑                      ↓
   └─ (skip if optional) SKIPPED
+  └─ (skip with force)  SKIPPED + audit comment
   └─ (fail) → FAILED → (retry) → PENDING
-  └─────────────── BLOCKED
+  └─────────────── BLOCKED (waiting for predecessors)
 ```
 
 **Indexes**:
@@ -244,10 +313,11 @@ PENDING → (assign) → IN_PROGRESS → (complete) → COMPLETED
 - `idx_task_instances_due_at` - SLA deadline queries
 - `idx_task_instances_sla_breached` - Find breached SLAs
 - `idx_task_instances_is_escalated` - Find escalated tasks
+- `idx_task_instances_is_adhoc` - Filter ad-hoc tasks
 
 **Relationships**:
 - Workflow Instances (M:1) - Many tasks per instance
-- Workflow Task Definitions (M:1) - Definition for this instance
+- Workflow Task Definitions (M:1) - Definition for this instance (NULL for ad-hoc)
 
 **Example Queries**:
 ```sql
@@ -255,6 +325,17 @@ PENDING → (assign) → IN_PROGRESS → (complete) → COMPLETED
 SELECT * FROM task_instances
 WHERE assigned_to = 'nurse.smith'
   AND status IN ('PENDING', 'IN_PROGRESS');
+
+-- Get ad-hoc tasks for a workflow
+SELECT * FROM task_instances
+WHERE workflow_instance_id = 'wf-001'
+  AND is_adhoc = TRUE;
+
+-- Get skipped tasks with reasons
+SELECT task_instance_id, adhoc_task_name, skip_reason, skipped_by_user
+FROM task_instances
+WHERE status = 'SKIPPED'
+  AND skip_reason IS NOT NULL;
 
 -- Get SLA-breached tasks
 SELECT * FROM task_instances

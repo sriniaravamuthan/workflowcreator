@@ -391,13 +391,24 @@ Endpoints for creating and managing patient-specific workflow instances.
 
 Create a new workflow instance for a patient using a published template. Automatically creates task instances for all template tasks with SLA calculations.
 
+**Duplicate Prevention:** The system prevents duplicate active workflows for the same patient + encounter + template combination. Only one active workflow (status: ACTIVE or PAUSED) can exist per combination.
+
 **Request:**
 ```json
 {
   "patientId": "uuid",
-  "templateId": "uuid"
+  "templateId": "uuid",
+  "encounterId": "ENC-2024-001",
+  "visitId": "VISIT-12345"
 }
 ```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| patientId | UUID | Yes | Patient identifier |
+| templateId | UUID | Yes | Published workflow template identifier |
+| encounterId | String | No | Clinical encounter ID (e.g., ER visit, admission) |
+| visitId | String | No | ADT visit tracking ID |
 
 **Response:** `201 Created`
 ```json
@@ -413,12 +424,27 @@ Create a new workflow instance for a patient using a published template. Automat
     "completedAt": null,
     "patientId": "uuid",
     "patientName": "John Doe",
+    "encounterId": "ENC-2024-001",
+    "visitId": "VISIT-12345",
     "templateId": "uuid",
     "templateName": "Emergency Admission Workflow",
     "taskInstances": [],
     "progressPercentage": 0,
     "createdAt": "2024-11-10T12:00:00",
     "updatedAt": "2024-11-10T12:00:00"
+  }
+}
+```
+
+**Error Response (Duplicate Workflow):** `409 Conflict`
+```json
+{
+  "success": false,
+  "message": "An active workflow already exists for this patient, encounter, and template combination",
+  "error": {
+    "errorCode": "INVALID_STATE",
+    "errorMessage": "An active workflow already exists for this patient, encounter, and template combination",
+    "timestamp": "2024-11-10T12:00:00"
   }
 }
 ```
@@ -482,6 +508,48 @@ Retrieve only active workflow instances for a patient.
 
 **Parameters:**
 - `patientId` (path): Patient UUID
+
+**Response:** `200 OK`
+
+Same structure as Get Patient Workflows.
+
+---
+
+### Get Workflows by Encounter
+**GET** `/workflows/instances/encounter/{encounterId}`
+
+Retrieve all workflow instances associated with a clinical encounter.
+
+**Parameters:**
+- `encounterId` (path): Clinical encounter ID
+
+**Response:** `200 OK`
+
+Same structure as Get Patient Workflows.
+
+---
+
+### Get Active Workflows by Encounter
+**GET** `/workflows/instances/encounter/{encounterId}/active`
+
+Retrieve only active workflow instances for an encounter.
+
+**Parameters:**
+- `encounterId` (path): Clinical encounter ID
+
+**Response:** `200 OK`
+
+Same structure as Get Patient Workflows.
+
+---
+
+### Get Workflows by Visit
+**GET** `/workflows/instances/visit/{visitId}`
+
+Retrieve all workflow instances associated with an ADT visit.
+
+**Parameters:**
+- `visitId` (path): ADT visit tracking ID
 
 **Response:** `200 OK`
 
@@ -569,6 +637,86 @@ Escalate a workflow instance for urgent attention.
 ```
 
 **Response:** `200 OK`
+
+---
+
+### Add Ad-hoc Task
+**POST** `/workflows/instances/{id}/adhoc-task`
+
+Create an ad-hoc task that is not part of the original workflow template. Ad-hoc tasks are dynamically created based on situational needs during workflow execution.
+
+**Parameters:**
+- `id` (path): Workflow Instance UUID
+
+**Request:**
+```json
+{
+  "taskName": "Additional Blood Work",
+  "taskDescription": "Patient requires additional blood tests based on initial results",
+  "assignTo": "lab.technician",
+  "createdByUser": "dr.smith",
+  "slaMinutes": 60
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| taskName | String | Yes | Name of the ad-hoc task (max 100 chars) |
+| taskDescription | String | No | Description of the task (max 500 chars) |
+| assignTo | String | No | User/role to assign the task to |
+| createdByUser | String | No | User who created the ad-hoc task |
+| slaMinutes | Integer | No | SLA duration in minutes (default: 60) |
+
+**Response:** `201 Created`
+```json
+{
+  "success": true,
+  "message": "Ad-hoc task created successfully",
+  "data": {
+    "id": "uuid",
+    "taskInstanceId": "task-adhoc-123",
+    "status": "PENDING",
+    "assignedTo": "lab.technician",
+    "isAdhoc": true,
+    "taskName": "Additional Blood Work",
+    "taskDescription": "Patient requires additional blood tests based on initial results",
+    "createdByUser": "dr.smith",
+    "slaDeadline": "2024-11-10T13:00:00",
+    "workflowInstanceId": "uuid",
+    "createdAt": "2024-11-10T12:00:00"
+  }
+}
+```
+
+---
+
+### Get Ad-hoc Tasks
+**GET** `/workflows/instances/{id}/adhoc-tasks`
+
+Retrieve all ad-hoc tasks for a workflow instance.
+
+**Parameters:**
+- `id` (path): Workflow Instance UUID
+
+**Response:** `200 OK`
+```json
+{
+  "success": true,
+  "message": "Ad-hoc tasks retrieved successfully",
+  "data": [
+    {
+      "id": "uuid",
+      "taskInstanceId": "task-adhoc-123",
+      "status": "PENDING",
+      "isAdhoc": true,
+      "taskName": "Additional Blood Work",
+      "taskDescription": "Patient requires additional blood tests",
+      "createdByUser": "dr.smith",
+      "workflowInstanceId": "uuid"
+    }
+  ]
+}
+```
 
 ---
 
@@ -781,6 +929,92 @@ Skip an optional task. Only works for tasks marked as optional.
 - `id` (path): Task Instance UUID
 
 **Response:** `200 OK`
+
+---
+
+### Skip Task with Reason
+**POST** `/workflows/tasks/{id}/skip-with-reason`
+
+Skip a task with a documented reason. Supports both optional and required tasks.
+
+**Parameters:**
+- `id` (path): Task Instance UUID
+
+**Request:**
+```json
+{
+  "reason": "Patient declined this procedure",
+  "skippedByUser": "nurse.smith",
+  "forceSkip": false
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| reason | String | Conditional | Required for required tasks, optional for optional tasks |
+| skippedByUser | String | No | User who skipped the task |
+| forceSkip | Boolean | Conditional | Must be true to skip required tasks |
+
+**Skip Rules:**
+- **Optional Tasks:** Can be skipped without reason or forceSkip
+- **Required Tasks:** Require both `reason` and `forceSkip=true`. An audit comment is automatically added documenting the skip.
+
+**Response:** `200 OK`
+```json
+{
+  "success": true,
+  "message": "Task skipped successfully",
+  "data": {
+    "id": "uuid",
+    "taskInstanceId": "task-123-abc",
+    "status": "SKIPPED",
+    "skipReason": "Patient declined this procedure",
+    "skippedByUser": "nurse.smith",
+    "comments": "[REQUIRED TASK SKIPPED] Skipped by nurse.smith. Reason: Patient declined this procedure"
+  }
+}
+```
+
+**Error Response (Required Task without forceSkip):** `400 Bad Request`
+```json
+{
+  "success": false,
+  "message": "Cannot skip a required task without forceSkip=true and a reason",
+  "error": {
+    "errorCode": "INVALID_ARGUMENT",
+    "errorMessage": "Cannot skip a required task without forceSkip=true and a reason"
+  }
+}
+```
+
+---
+
+### Get Skipped Tasks
+**GET** `/workflows/tasks/workflow/{workflowInstanceId}/skipped`
+
+Retrieve all skipped tasks for a workflow instance.
+
+**Parameters:**
+- `workflowInstanceId` (path): Workflow Instance UUID
+
+**Response:** `200 OK`
+```json
+{
+  "success": true,
+  "message": "Skipped tasks retrieved successfully",
+  "data": [
+    {
+      "id": "uuid",
+      "taskInstanceId": "task-123-abc",
+      "status": "SKIPPED",
+      "taskName": "Lab Work",
+      "skipReason": "Patient declined",
+      "skippedByUser": "nurse.smith",
+      "isOptional": true
+    }
+  ]
+}
+```
 
 ---
 
@@ -1099,7 +1333,9 @@ POST /api/v1/workflows/templates/{templateId}/publish
 POST /api/v1/workflows/instances
 {
   "patientId": "{patientId}",
-  "templateId": "{templateId}"
+  "templateId": "{templateId}",
+  "encounterId": "ENC-2024-001",
+  "visitId": "VISIT-12345"
 }
 ```
 

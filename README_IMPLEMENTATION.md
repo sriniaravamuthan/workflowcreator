@@ -88,10 +88,18 @@ IN_PROGRESS (with SLA deadline and escalation)
   ↓
 COMPLETED (or FAILED)
 
-Additional: SKIPPED (for optional tasks)
+Additional: SKIPPED (for optional tasks, or forced skip for required tasks with reason)
           BLOCKED (waiting for prerequisites)
           EXPIRED/ESCALATED (SLA breach)
 ```
+
+### Ad-hoc Tasks
+Ad-hoc tasks can be dynamically created during workflow execution:
+- Not part of the original template
+- Created based on situational needs
+- Have their own SLA tracking
+- Are optional by default
+- Tracked separately with `isAdhoc` flag
 
 ## Services
 
@@ -102,16 +110,21 @@ Additional: SKIPPED (for optional tasks)
 
 ### WorkflowInstanceService
 - Create workflow instances from published templates
+- Support for patient, encounter, and visit context
+- Duplicate prevention (one active workflow per patient + encounter + template)
 - Automatic task instance creation with SLA calculation
 - Workflow state management (ACTIVE, PAUSED, COMPLETED, FAILED, CANCELLED)
 - Task dependency tracking and workflow progression
+- Ad-hoc task creation during workflow execution
 
 ### TaskInstanceService
 - Task assignment, start, completion, and failure
 - SLA monitoring and breach detection
 - Task escalation with time remaining calculation
 - Retry logic for failed tasks (up to maxRetries)
-- Skip optional tasks
+- Skip optional tasks (no reason required)
+- Skip required tasks with force flag and reason (audited)
+- Skip reason and user tracking for compliance
 - Next task activation on completion
 
 ### OrderService
@@ -267,10 +280,15 @@ src/main/resources/
 
 ### 2. Workflow Execution
 - ✅ Patient workflow instances from templates
+- ✅ Patient, encounter, and visit context for clinical isolation
+- ✅ Duplicate workflow prevention (per patient + encounter + template)
 - ✅ Automatic task instance creation
+- ✅ Ad-hoc task creation during workflow execution
 - ✅ Task lifecycle management (assign, start, complete, fail)
 - ✅ Task escalation and retry logic
 - ✅ SLA tracking with deadline calculation
+- ✅ Skip optional tasks without reason
+- ✅ Force-skip required tasks with reason (audited)
 - ✅ Workflow state transitions (ACTIVE, PAUSED, COMPLETED, FAILED, CANCELLED)
 - ✅ Next task activation on completion
 
