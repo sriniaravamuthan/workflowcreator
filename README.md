@@ -25,6 +25,8 @@ mvn spring-boot:run
 
 ✅ **Workflow Execution Engine**
 - Patient workflow instances with automatic task creation
+- **Patient + Encounter + Visit context** for proper clinical workflow isolation
+- **Duplicate workflow prevention** per patient/encounter/template combination
 - 8-state order lifecycle (Proposed → Closed/Cancelled)
 - Task assignment, escalation, and SLA tracking
 - Retry logic and failure compensation
@@ -66,6 +68,46 @@ src/main/java/com/hmis/workflow/
 - Hibernate/JPA
 - Apache Kafka
 - Maven
+
+## Workflow Context (Patient + Encounter + Visit)
+
+The workflow engine supports proper **clinical context isolation** for workflows:
+
+### Context Parameters
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `patientId` | Yes | The patient UUID |
+| `templateId` | Yes | The workflow template UUID |
+| `encounterId` | No* | Clinical encounter ID (e.g., ER visit, admission) |
+| `visitId` | No | ADT visit tracking ID |
+
+*Recommended for production use to ensure proper workflow isolation.
+
+### API Endpoint
+
+```http
+POST /workflows/instances
+{
+  "patientId": "uuid-of-patient",
+  "templateId": "uuid-of-template",
+  "encounterId": "ENC-2024-001",    // Recommended
+  "visitId": "VISIT-12345"          // Optional
+}
+```
+
+### Key Features
+
+- **Uniqueness Validation**: Only one active workflow per patient + encounter + template combination
+- **Duplicate Prevention**: Prevents accidental duplicate protocol execution
+- **Encounter Isolation**: Different encounters can have separate workflows
+- **ADT Integration**: Visit ID enables integration with ADT systems
+
+### Use Cases
+
+- Patient admitted (encounter-001) → Start Admission Protocol
+- Same patient, different ER visit (encounter-002) → Can start another Admission Protocol
+- Trying to start duplicate for encounter-001 → Error: "Active workflow already exists"
 
 ## Task Dependency Model
 

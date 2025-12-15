@@ -110,6 +110,14 @@ CREATE TABLE template_orders (
 -- ============================================================================
 -- WORKFLOW_INSTANCES TABLE
 -- ============================================================================
+-- Workflow Context:
+-- - patient_id: The patient this workflow is for (required)
+-- - encounter_id: The clinical encounter (e.g., ER visit, admission)
+-- - visit_id: The ADT visit tracking ID (for visit tracking)
+--
+-- Uniqueness: Only one active workflow per patient + encounter + template combination.
+-- This prevents duplicate workflows for the same clinical context.
+-- ============================================================================
 CREATE TABLE workflow_instances (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
     workflow_instance_id VARCHAR(100) NOT NULL UNIQUE,
@@ -117,14 +125,19 @@ CREATE TABLE workflow_instances (
     template_id VARCHAR(36) NOT NULL,
     status VARCHAR(50) NOT NULL,
     notes VARCHAR(500),
-    encounter_id VARCHAR(100),
+    -- Clinical context identifiers
+    encounter_id VARCHAR(100),  -- Clinical encounter (e.g., ER visit, admission)
+    visit_id VARCHAR(100),      -- ADT visit tracking ID
+    -- Escalation tracking
     is_escalated BOOLEAN NOT NULL DEFAULT FALSE,
     escalation_reason VARCHAR(500),
+    -- Review/approval workflow
     review_status VARCHAR(50) NOT NULL DEFAULT 'PENDING_REVIEW',
     reviewed_by_user VARCHAR(100),
     reviewed_at TIMESTAMP,
     review_notes CLOB,
     can_execute BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Timestamps
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL,
@@ -497,10 +510,14 @@ CREATE INDEX idx_workflow_instances_workflow_instance_id ON workflow_instances(w
 CREATE INDEX idx_workflow_instances_patient_id ON workflow_instances(patient_id);
 CREATE INDEX idx_workflow_instances_template_id ON workflow_instances(template_id);
 CREATE INDEX idx_workflow_instances_status ON workflow_instances(status);
+CREATE INDEX idx_workflow_instances_encounter_id ON workflow_instances(encounter_id);
+CREATE INDEX idx_workflow_instances_visit_id ON workflow_instances(visit_id);
 CREATE INDEX idx_workflow_instances_is_escalated ON workflow_instances(is_escalated);
 CREATE INDEX idx_workflow_instances_created_at ON workflow_instances(created_at);
 CREATE INDEX idx_workflow_instances_review_status ON workflow_instances(review_status);
 CREATE INDEX idx_workflow_instances_can_execute ON workflow_instances(can_execute);
+-- Composite index for uniqueness check: patient + encounter + template
+CREATE INDEX idx_workflow_instances_patient_encounter_template ON workflow_instances(patient_id, encounter_id, template_id);
 
 -- Task Instance indexes
 CREATE INDEX idx_task_instances_task_instance_id ON task_instances(task_instance_id);

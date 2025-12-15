@@ -37,7 +37,25 @@ public class WorkflowInstanceService {
     private final NotificationService notificationService;
 
     /**
-     * Create a new workflow instance for a patient.
+     * Create a new workflow instance for a patient (backward compatible).
+     * Use createWorkflowInstance with encounter/visit IDs for full clinical context.
+     */
+    public WorkflowInstance createWorkflowInstance(UUID patientId, UUID templateId) {
+        return createWorkflowInstance(patientId, templateId, null, null);
+    }
+
+    /**
+     * Create a new workflow instance for a patient with full clinical context.
+     *
+     * Context Parameters:
+     * - patientId: The patient this workflow is for (required)
+     * - templateId: The workflow template to instantiate (required)
+     * - encounterId: The clinical encounter (e.g., ER visit, admission) - optional but recommended
+     * - visitId: The ADT visit tracking ID - optional
+     *
+     * Uniqueness Validation:
+     * - Prevents duplicate active workflows for the same patient + encounter + template combination
+     * - Completed/cancelled/failed workflows do not block new workflow creation
      *
      * Task Status Assignment:
      * - Entry tasks (no predecessors): Set to PENDING - can be started immediately
@@ -49,8 +67,17 @@ public class WorkflowInstanceService {
      *
      * Notifications:
      * - Entry task assignees are notified immediately upon workflow creation
+     *
+     * @param patientId The patient ID (required)
+     * @param templateId The workflow template ID (required)
+     * @param encounterId The encounter/admission ID (optional but recommended)
+     * @param visitId The ADT visit ID (optional)
+     * @return The created workflow instance
+     * @throws IllegalArgumentException if patient or template not found
+     * @throws IllegalStateException if template not published or duplicate workflow exists
      */
-    public WorkflowInstance createWorkflowInstance(UUID patientId, UUID templateId) {
+    public WorkflowInstance createWorkflowInstance(UUID patientId, UUID templateId,
+                                                    String encounterId, String visitId) {
         Patient patient = patientRepository.findById(patientId)
                 .orElseThrow(() -> new IllegalArgumentException("Patient not found: " + patientId));
 
@@ -61,14 +88,31 @@ public class WorkflowInstanceService {
             throw new IllegalStateException("Cannot start workflow with non-published template");
         }
 
+        // Check for duplicate active workflows for the same patient + encounter + template
+        List<WorkflowInstance> existingWorkflows = workflowRepository
+                .findActiveByPatientEncounterAndTemplate(patientId, encounterId, templateId);
+
+        if (!existingWorkflows.isEmpty()) {
+            WorkflowInstance existing = existingWorkflows.get(0);
+            throw new IllegalStateException(String.format(
+                    "An active workflow already exists for this patient/encounter/template combination. " +
+                    "Existing workflow ID: %s, Status: %s. " +
+                    "Complete or cancel the existing workflow before creating a new one.",
+                    existing.getWorkflowInstanceId(),
+                    existing.getStatus()));
+        }
+
         WorkflowInstance instance = new WorkflowInstance();
         instance.setWorkflowInstanceId(UUID.randomUUID().toString());
         instance.setPatient(patient);
         instance.setTemplate(template);
+        instance.setEncounterId(encounterId);
+        instance.setVisitId(visitId);
         instance.setStatus(WorkflowStatus.ACTIVE);
         instance.setStartedAt(LocalDateTime.now());
 
-        log.info("Created workflow instance {} for patient {}", instance.getWorkflowInstanceId(), patientId);
+        log.info("Created workflow instance {} for patient {} (encounter: {}, visit: {})",
+                instance.getWorkflowInstanceId(), patientId, encounterId, visitId);
 
         // Create task instances from template tasks
         template.getTasks().forEach(taskDef -> {

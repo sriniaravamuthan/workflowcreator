@@ -34,17 +34,32 @@ public class WorkflowInstanceController {
     private final WorkflowInstanceService workflowInstanceService;
 
     /**
-     * Create a new workflow instance for a patient
+     * Create a new workflow instance for a patient.
+     *
+     * Required parameters:
+     * - patientId: The patient UUID
+     * - templateId: The workflow template UUID
+     *
+     * Optional but recommended parameters:
+     * - encounterId: The clinical encounter ID (e.g., ER visit, admission)
+     * - visitId: The ADT visit tracking ID
+     *
+     * Uniqueness: Only one active workflow per patient + encounter + template combination.
+     *
      * POST /workflows/instances
      */
     @PostMapping
     public ResponseEntity<ApiResponse<WorkflowInstanceDTO>> createWorkflowInstance(
             @RequestBody CreateWorkflowInstanceRequest request) {
-        log.info("Creating workflow instance for patient: {} using template: {}",
-                request.getPatientId(), request.getTemplateId());
+        log.info("Creating workflow instance for patient: {} using template: {} (encounter: {}, visit: {})",
+                request.getPatientId(), request.getTemplateId(),
+                request.getEncounterId(), request.getVisitId());
 
         WorkflowInstance instance = workflowInstanceService.createWorkflowInstance(
-                request.getPatientId(), request.getTemplateId());
+                request.getPatientId(),
+                request.getTemplateId(),
+                request.getEncounterId(),
+                request.getVisitId());
 
         WorkflowInstanceDTO dto = mapToDTO(instance);
 
@@ -253,6 +268,8 @@ public class WorkflowInstanceController {
                 .completedAt(instance.getCompletedAt())
                 .patientId(instance.getPatient().getId())
                 .patientName(instance.getPatient().getFullName())
+                .encounterId(instance.getEncounterId())
+                .visitId(instance.getVisitId())
                 .templateId(instance.getTemplate().getId())
                 .templateName(instance.getTemplate().getName())
                 .progressPercentage(instance.getProgressPercentage())
@@ -288,6 +305,8 @@ public class WorkflowInstanceController {
     static class CreateWorkflowInstanceRequest {
         public UUID patientId;
         public UUID templateId;
+        public String encounterId; // Optional: clinical encounter ID (e.g., ER visit, admission)
+        public String visitId;     // Optional: ADT visit tracking ID
 
         public UUID getPatientId() {
             return patientId;
@@ -303,6 +322,22 @@ public class WorkflowInstanceController {
 
         public void setTemplateId(UUID templateId) {
             this.templateId = templateId;
+        }
+
+        public String getEncounterId() {
+            return encounterId;
+        }
+
+        public void setEncounterId(String encounterId) {
+            this.encounterId = encounterId;
+        }
+
+        public String getVisitId() {
+            return visitId;
+        }
+
+        public void setVisitId(String visitId) {
+            this.visitId = visitId;
         }
     }
 

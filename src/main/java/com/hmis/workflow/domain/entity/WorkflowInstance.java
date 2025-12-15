@@ -22,8 +22,16 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * WorkflowInstance entity representing an instance of a workflow for a patient
- * Manages workflow execution, orders, tasks, and instructions for a patient
+ * WorkflowInstance entity representing an instance of a workflow for a patient.
+ * Manages workflow execution, orders, tasks, and instructions for a patient.
+ *
+ * Workflow Context:
+ * - patientId: The patient this workflow is for
+ * - encounterId: The clinical encounter (e.g., ER visit, admission, outpatient visit)
+ * - visitId: The ADT visit tracking ID (may be same as encounter or different based on system)
+ *
+ * Uniqueness: A workflow instance should be unique per patient + encounter + template combination.
+ * This ensures the same protocol isn't duplicated for a single patient encounter.
  */
 @Entity
 @Table(name = "workflow_instances")
@@ -51,7 +59,10 @@ public class WorkflowInstance extends BaseEntity {
     private LocalDateTime completedAt;
 
     @Column(length = 100)
-    private String encounterId; // Associated encounter/visit ID
+    private String encounterId; // Associated encounter ID (e.g., ER visit, admission)
+
+    @Column(length = 100)
+    private String visitId; // Associated ADT visit ID (for visit tracking)
 
     @Column(nullable = false, columnDefinition = "BOOLEAN DEFAULT false")
     private Boolean isEscalated = false;
