@@ -75,6 +75,13 @@ CREATE TABLE workflow_task_definitions (
     next_task_id VARCHAR(100),
     failure_task_id VARCHAR(100),
     metadata CLOB,
+    -- Scheduling Constraints
+    scheduled_start_time TIME,           -- Time of day when task should start
+    max_wait_time_minutes INT,           -- Max time in PENDING before escalation
+    allowed_start_time_of_day TIME,      -- Earliest time task can execute
+    allowed_end_time_of_day TIME,        -- Latest time task can execute
+    allowed_days_of_week VARCHAR(50),    -- Comma-separated days (e.g., "MON,TUE,WED")
+    -- Audit fields
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
     created_by VARCHAR(255),
@@ -186,6 +193,12 @@ CREATE TABLE task_instances (
     -- Skip support
     skip_reason CLOB,
     skipped_by_user VARCHAR(255),
+    -- Scheduling Constraints (instance-level)
+    scheduled_start_time TIMESTAMP,      -- When this specific task should start
+    max_wait_deadline TIMESTAMP,         -- Calculated: created + maxWaitTimeMinutes
+    allowed_start_time_of_day TIME,      -- Earliest time task can execute
+    allowed_end_time_of_day TIME,        -- Latest time task can execute
+    allowed_days_of_week VARCHAR(50),    -- Comma-separated days
     -- Audit fields
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
@@ -477,6 +490,95 @@ CREATE TABLE audit_logs (
 );
 
 -- ============================================================================
+-- TASK_NOTES TABLE (APPEND-ONLY)
+-- ============================================================================
+-- Immutable notes for task instances. Used for clinical documentation,
+-- audit trail, and compliance. Notes should NEVER be updated or deleted.
+-- ============================================================================
+CREATE TABLE task_notes (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    task_instance_id VARCHAR(36) NOT NULL,
+    note_type VARCHAR(20) NOT NULL,      -- CREATION, PROGRESS, COMPLETION, etc.
+    content CLOB NOT NULL,               -- Note content (immutable)
+    author_user VARCHAR(255) NOT NULL,   -- User who wrote the note
+    author_role VARCHAR(100),            -- Role at time of note creation
+    noted_at TIMESTAMP NOT NULL,         -- When the note was recorded
+    addendum_to_note_id VARCHAR(100),    -- Reference to note being corrected
+    priority INT DEFAULT 0,              -- 0=Normal, 1=Important, 2=Critical
+    is_flagged BOOLEAN NOT NULL DEFAULT FALSE,
+    metadata CLOB,
+    -- Audit fields (immutable)
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    created_by VARCHAR(255),
+    updated_by VARCHAR(255),
+    FOREIGN KEY (task_instance_id) REFERENCES task_instances(id) ON DELETE CASCADE
+);
+
+-- ============================================================================
+-- TASK_RESULTS TABLE (APPEND-ONLY)
+-- ============================================================================
+-- Structured results for task instances. Used for clinical measurements,
+-- observations, and outcomes. Results should NEVER be updated - use
+-- CORRECTION type to correct a previous result.
+-- ============================================================================
+CREATE TABLE task_results (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    task_instance_id VARCHAR(36) NOT NULL,
+    result_type VARCHAR(20) NOT NULL,    -- OUTCOME, MEASUREMENT, OBSERVATION, etc.
+    result_name VARCHAR(100) NOT NULL,   -- Name of the result (e.g., "Blood Pressure")
+    result_code VARCHAR(50),             -- Standard code (e.g., LOINC)
+    code_system VARCHAR(50),             -- Code system (e.g., "LOINC", "SNOMED")
+    result_value CLOB NOT NULL,          -- The actual value
+    unit VARCHAR(50),                    -- Unit of measurement
+    reference_range VARCHAR(100),        -- Normal range
+    interpretation_code VARCHAR(10),     -- N=Normal, H=High, L=Low, A=Abnormal
+    recorded_by_user VARCHAR(255) NOT NULL,
+    recorded_by_role VARCHAR(100),
+    recorded_at TIMESTAMP NOT NULL,
+    observed_at TIMESTAMP,               -- When actually observed (may differ from recorded)
+    verified_by_user VARCHAR(255),
+    verified_at TIMESTAMP,
+    is_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    is_critical BOOLEAN NOT NULL DEFAULT FALSE,
+    corrects_result_id VARCHAR(100),     -- For CORRECTION type
+    metadata CLOB,
+    comments CLOB,
+    -- Audit fields (immutable)
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    created_by VARCHAR(255),
+    updated_by VARCHAR(255),
+    FOREIGN KEY (task_instance_id) REFERENCES task_instances(id) ON DELETE CASCADE
+);
+
+-- ============================================================================
+-- ORDER_NOTES TABLE (APPEND-ONLY)
+-- ============================================================================
+-- Immutable notes for orders. Used for clinical documentation,
+-- indications, interpretations, and audit trail.
+-- ============================================================================
+CREATE TABLE order_notes (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    order_id VARCHAR(36) NOT NULL,
+    note_type VARCHAR(20) NOT NULL,      -- CREATION, INDICATION, AUTHORIZATION, etc.
+    content CLOB NOT NULL,               -- Note content (immutable)
+    author_user VARCHAR(255) NOT NULL,   -- User who wrote the note
+    author_role VARCHAR(100),            -- Role at time of note creation
+    noted_at TIMESTAMP NOT NULL,         -- When the note was recorded
+    addendum_to_note_id VARCHAR(100),    -- Reference to note being corrected
+    priority INT DEFAULT 0,              -- 0=Normal, 1=Important, 2=Critical
+    is_flagged BOOLEAN NOT NULL DEFAULT FALSE,
+    metadata CLOB,
+    -- Audit fields (immutable)
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    created_by VARCHAR(255),
+    updated_by VARCHAR(255),
+    FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+);
+
+-- ============================================================================
 -- INDEXES FOR PERFORMANCE
 -- ============================================================================
 
@@ -587,6 +689,32 @@ CREATE INDEX idx_audit_logs_correlation_id ON audit_logs(correlation_id);
 CREATE INDEX idx_audit_logs_patient_id ON audit_logs(patient_id);
 CREATE INDEX idx_audit_logs_workflow_instance_id ON audit_logs(workflow_instance_id);
 CREATE INDEX idx_audit_logs_is_legal_hold ON audit_logs(is_legal_hold);
+
+-- Task Note indexes
+CREATE INDEX idx_task_notes_task_instance ON task_notes(task_instance_id);
+CREATE INDEX idx_task_notes_noted_at ON task_notes(noted_at);
+CREATE INDEX idx_task_notes_author ON task_notes(author_user);
+CREATE INDEX idx_task_notes_type ON task_notes(note_type);
+CREATE INDEX idx_task_notes_is_flagged ON task_notes(is_flagged);
+
+-- Task Result indexes
+CREATE INDEX idx_task_results_task_instance ON task_results(task_instance_id);
+CREATE INDEX idx_task_results_recorded_at ON task_results(recorded_at);
+CREATE INDEX idx_task_results_type ON task_results(result_type);
+CREATE INDEX idx_task_results_code ON task_results(result_code);
+CREATE INDEX idx_task_results_is_verified ON task_results(is_verified);
+CREATE INDEX idx_task_results_is_critical ON task_results(is_critical);
+
+-- Order Note indexes
+CREATE INDEX idx_order_notes_order ON order_notes(order_id);
+CREATE INDEX idx_order_notes_noted_at ON order_notes(noted_at);
+CREATE INDEX idx_order_notes_author ON order_notes(author_user);
+CREATE INDEX idx_order_notes_type ON order_notes(note_type);
+CREATE INDEX idx_order_notes_is_flagged ON order_notes(is_flagged);
+
+-- Task Instance scheduling indexes
+CREATE INDEX idx_task_instances_scheduled_start ON task_instances(scheduled_start_time);
+CREATE INDEX idx_task_instances_max_wait_deadline ON task_instances(max_wait_deadline);
 
 -- ============================================================================
 -- SEQUENCES (if using database that requires them)

@@ -2,10 +2,13 @@ package com.hmis.workflow.service;
 
 import com.hmis.workflow.domain.entity.CompensationAction;
 import com.hmis.workflow.domain.entity.Order;
+import com.hmis.workflow.domain.entity.OrderNote;
+import com.hmis.workflow.domain.entity.OrderNote.NoteType;
 import com.hmis.workflow.domain.entity.WorkflowInstance;
 import com.hmis.workflow.domain.enums.CompensationActionType;
 import com.hmis.workflow.domain.enums.OrderStatus;
 import com.hmis.workflow.repository.CompensationActionRepository;
+import com.hmis.workflow.repository.OrderNoteRepository;
 import com.hmis.workflow.repository.OrderRepository;
 import com.hmis.workflow.repository.WorkflowInstanceRepository;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +32,7 @@ public class OrderService {
 
     private final OrderRepository orderRepository;
     private final CompensationActionRepository compensationRepository;
+    private final OrderNoteRepository noteRepository;
     private final WorkflowInstanceRepository workflowRepository;
 
     /**
@@ -269,5 +273,150 @@ public class OrderService {
      */
     public List<Order> getOrdersWithResults() {
         return orderRepository.findOrdersWithResults();
+    }
+
+    // ========================================================================
+    // ORDER NOTES (APPEND-ONLY)
+    // ========================================================================
+
+    /**
+     * Add an immutable note to an order.
+     * Notes are append-only and cannot be modified or deleted for compliance.
+     *
+     * @param orderId The order ID
+     * @param noteType Type of note (CREATION, AUTHORIZATION, RESULT, etc.)
+     * @param content The note content
+     * @param authorUser User creating the note
+     * @param authorRole Role of the user
+     * @return The created note
+     */
+    public OrderNote addNote(UUID orderId, NoteType noteType, String content,
+                            String authorUser, String authorRole) {
+        Order order = getOrder(orderId);
+
+        if (content == null || content.trim().isEmpty()) {
+            throw new IllegalArgumentException("Note content cannot be empty");
+        }
+
+        OrderNote note = OrderNote.builder()
+                .order(order)
+                .noteType(noteType)
+                .content(content)
+                .authorUser(authorUser)
+                .authorRole(authorRole)
+                .notedAt(LocalDateTime.now())
+                .priority(0)
+                .isFlagged(false)
+                .build();
+
+        log.info("Added {} note to order {} by {}", noteType, orderId, authorUser);
+        return noteRepository.save(note);
+    }
+
+    /**
+     * Add a clinical indication note (why the order was placed).
+     */
+    public OrderNote addIndicationNote(UUID orderId, String indication,
+                                       String authorUser, String authorRole) {
+        return addNote(orderId, NoteType.INDICATION, indication, authorUser, authorRole);
+    }
+
+    /**
+     * Add an authorization note (justification for signing the order).
+     */
+    public OrderNote addAuthorizationNote(UUID orderId, String justification,
+                                          String authorUser, String authorRole) {
+        return addNote(orderId, NoteType.AUTHORIZATION, justification, authorUser, authorRole);
+    }
+
+    /**
+     * Add a result interpretation note.
+     */
+    public OrderNote addInterpretationNote(UUID orderId, String interpretation,
+                                           String authorUser, String authorRole) {
+        return addNote(orderId, NoteType.INTERPRETATION, interpretation, authorUser, authorRole);
+    }
+
+    /**
+     * Add a cancellation note with reason.
+     */
+    public OrderNote addCancellationNote(UUID orderId, String reason,
+                                         String authorUser, String authorRole) {
+        return addNote(orderId, NoteType.CANCELLATION, reason, authorUser, authorRole);
+    }
+
+    /**
+     * Add an addendum/correction to an existing note.
+     */
+    public OrderNote addAddendum(UUID orderId, String originalNoteId, String content,
+                                String authorUser, String authorRole) {
+        Order order = getOrder(orderId);
+
+        if (content == null || content.trim().isEmpty()) {
+            throw new IllegalArgumentException("Addendum content cannot be empty");
+        }
+
+        OrderNote note = OrderNote.builder()
+                .order(order)
+                .noteType(NoteType.ADDENDUM)
+                .content(content)
+                .authorUser(authorUser)
+                .authorRole(authorRole)
+                .notedAt(LocalDateTime.now())
+                .addendumToNoteId(originalNoteId)
+                .priority(0)
+                .isFlagged(false)
+                .build();
+
+        log.info("Added addendum to note {} for order {} by {}", originalNoteId, orderId, authorUser);
+        return noteRepository.save(note);
+    }
+
+    /**
+     * Add a flagged/priority note (e.g., alert).
+     */
+    public OrderNote addFlaggedNote(UUID orderId, NoteType noteType, String content,
+                                    String authorUser, String authorRole, int priority) {
+        Order order = getOrder(orderId);
+
+        if (content == null || content.trim().isEmpty()) {
+            throw new IllegalArgumentException("Note content cannot be empty");
+        }
+
+        OrderNote note = OrderNote.builder()
+                .order(order)
+                .noteType(noteType)
+                .content(content)
+                .authorUser(authorUser)
+                .authorRole(authorRole)
+                .notedAt(LocalDateTime.now())
+                .priority(priority)
+                .isFlagged(priority > 0)
+                .build();
+
+        log.info("Added flagged {} note (priority={}) to order {} by {}",
+                noteType, priority, orderId, authorUser);
+        return noteRepository.save(note);
+    }
+
+    /**
+     * Get all notes for an order (chronological order).
+     */
+    public List<OrderNote> getOrderNotes(UUID orderId) {
+        return noteRepository.findByOrderIdOrderByNotedAtAsc(orderId);
+    }
+
+    /**
+     * Get notes by type for an order.
+     */
+    public List<OrderNote> getOrderNotesByType(UUID orderId, NoteType noteType) {
+        return noteRepository.findByOrderIdAndNoteTypeOrderByNotedAtAsc(orderId, noteType);
+    }
+
+    /**
+     * Get flagged notes for an order.
+     */
+    public List<OrderNote> getFlaggedNotes(UUID orderId) {
+        return noteRepository.findByOrderIdAndIsFlaggedTrueOrderByNotedAtDesc(orderId);
     }
 }

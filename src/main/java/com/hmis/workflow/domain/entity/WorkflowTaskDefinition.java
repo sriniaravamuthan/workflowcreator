@@ -14,6 +14,7 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
+import java.time.LocalTime;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -84,6 +85,45 @@ public class WorkflowTaskDefinition extends BaseEntity {
 
     @Column(columnDefinition = "TEXT")
     private String metadata;
+
+    // Scheduling Constraints
+    /**
+     * Optional scheduled start time (time of day).
+     * When set, the task should ideally start at this time.
+     * Example: 08:00 for morning medication rounds
+     */
+    @Column
+    private LocalTime scheduledStartTime;
+
+    /**
+     * Maximum wait time in minutes before escalation.
+     * If task stays in PENDING status longer than this, it should be escalated.
+     * Different from SLA which tracks total duration from start to completion.
+     */
+    @Column
+    private Integer maxWaitTimeMinutes;
+
+    /**
+     * Earliest time of day when this task can be executed.
+     * Example: 06:00 for fasting lab draws
+     */
+    @Column
+    private LocalTime allowedStartTimeOfDay;
+
+    /**
+     * Latest time of day when this task can be executed.
+     * Example: 18:00 for non-emergency procedures
+     */
+    @Column
+    private LocalTime allowedEndTimeOfDay;
+
+    /**
+     * Comma-separated list of allowed days of week.
+     * Example: "MON,TUE,WED,THU,FRI" for weekday-only tasks
+     * If null, task can be executed any day.
+     */
+    @Column(length = 50)
+    private String allowedDaysOfWeek;
 
     @ManyToOne
     @JoinColumn(name = "template_id", nullable = false, foreignKey = @ForeignKey(name = "fk_task_template"))
@@ -158,5 +198,63 @@ public class WorkflowTaskDefinition extends BaseEntity {
         List<String> current = new java.util.ArrayList<>(getPredecessorTaskIdList());
         current.remove(predecessorId.trim());
         setPredecessorTaskIdList(current);
+    }
+
+    /**
+     * Get the list of allowed days of week.
+     *
+     * @return List of day names (e.g., "MON", "TUE"), or empty list if all days allowed
+     */
+    @Transient
+    public List<String> getAllowedDaysOfWeekList() {
+        if (allowedDaysOfWeek == null || allowedDaysOfWeek.trim().isEmpty()) {
+            return Collections.emptyList();
+        }
+        return Arrays.stream(allowedDaysOfWeek.split(","))
+                .map(String::trim)
+                .map(String::toUpperCase)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Check if this task has time-of-day constraints.
+     *
+     * @return true if the task has allowed time window restrictions
+     */
+    @Transient
+    public boolean hasTimeOfDayConstraints() {
+        return allowedStartTimeOfDay != null || allowedEndTimeOfDay != null;
+    }
+
+    /**
+     * Check if a given time is within the allowed execution window.
+     *
+     * @param time The time to check
+     * @return true if the time is within allowed window, or if no constraints exist
+     */
+    @Transient
+    public boolean isTimeAllowed(LocalTime time) {
+        if (time == null || !hasTimeOfDayConstraints()) {
+            return true;
+        }
+        boolean afterStart = allowedStartTimeOfDay == null || !time.isBefore(allowedStartTimeOfDay);
+        boolean beforeEnd = allowedEndTimeOfDay == null || !time.isAfter(allowedEndTimeOfDay);
+        return afterStart && beforeEnd;
+    }
+
+    /**
+     * Check if a given day of week is allowed for this task.
+     *
+     * @param dayOfWeek The day to check (e.g., "MON", "TUE")
+     * @return true if the day is allowed, or if no day constraints exist
+     */
+    @Transient
+    public boolean isDayAllowed(String dayOfWeek) {
+        List<String> allowedDays = getAllowedDaysOfWeekList();
+        if (allowedDays.isEmpty()) {
+            return true; // No restrictions
+        }
+        return allowedDays.contains(dayOfWeek.toUpperCase());
     }
 }

@@ -16,9 +16,13 @@ src/main/resources/db/
 ```
 
 ### Database Statistics
-- **Total Tables**: 15
-- **Total Indexes**: 35+
-- **Audit Tables**: 1 (immutable, long-term retention)
+- **Total Tables**: 18
+- **Total Indexes**: 55+
+- **Audit Tables**: 4 (immutable, append-only for compliance)
+  - audit_logs (general audit)
+  - task_notes (task documentation)
+  - task_results (task outcomes)
+  - order_notes (order documentation)
 - **Core Tables**: 14 (operational data)
 - **Views**: 0 (can be added for reporting)
 - **Sequences**: Optional (UUID-based auto-increment)
@@ -107,11 +111,11 @@ WHERE category = 'Emergency' AND active = TRUE;
 
 ### 3. WORKFLOW_TASK_DEFINITIONS (Task Definitions)
 ```
-Columns: 14
+Columns: 19
 Primary Key: id (UUID)
 Foreign Key: template_id (references workflow_templates)
 ```
-**Purpose**: Define individual tasks within workflow templates
+**Purpose**: Define individual tasks within workflow templates with scheduling constraints
 
 **Key Columns**:
 - `task_order`: Sequential position (1, 2, 3, ...)
@@ -121,6 +125,30 @@ Foreign Key: template_id (references workflow_templates)
 - `is_optional`: TRUE for optional tasks
 - `next_task_id`: Task to activate on completion
 - `failure_task_id`: Fallback task on failure
+
+**Scheduling Constraint Columns**:
+- `scheduled_start_time`: Time of day when task should ideally start (e.g., 08:00)
+- `max_wait_time_minutes`: Max time in PENDING before escalation
+- `allowed_start_time_of_day`: Earliest time task can execute (e.g., 06:00)
+- `allowed_end_time_of_day`: Latest time task can execute (e.g., 18:00)
+- `allowed_days_of_week`: Comma-separated days (e.g., "MON,TUE,WED,THU,FRI")
+
+**Scheduling Examples**:
+```
+Fasting Lab Draw:
+- allowed_start_time_of_day: 06:00
+- allowed_end_time_of_day: 10:00
+- allowed_days_of_week: NULL (any day)
+
+Medication Administration:
+- scheduled_start_time: 08:00 (first dose)
+- max_wait_time_minutes: 30
+
+Operating Room Procedure:
+- allowed_start_time_of_day: 07:00
+- allowed_end_time_of_day: 17:00
+- allowed_days_of_week: "MON,TUE,WED,THU,FRI"
+```
 
 **Indexes**:
 - `idx_workflow_task_definitions_template_id` - Find template tasks
@@ -136,6 +164,11 @@ Foreign Key: template_id (references workflow_templates)
 SELECT * FROM workflow_task_definitions
 WHERE template_id = 'template-001'
 ORDER BY task_order;
+
+-- Get tasks with time restrictions
+SELECT * FROM workflow_task_definitions
+WHERE allowed_start_time_of_day IS NOT NULL
+   OR allowed_end_time_of_day IS NOT NULL;
 ```
 
 ---
@@ -235,7 +268,7 @@ WHERE status = 'COMPLETED'
 
 ### 5. TASK_INSTANCES (Task Execution)
 ```
-Columns: 30
+Columns: 35
 Primary Key: id (UUID)
 Unique Keys: task_instance_id
 Foreign Keys: workflow_instance_id, task_definition_id (nullable for ad-hoc tasks)
@@ -268,6 +301,13 @@ Foreign Keys: workflow_instance_id, task_definition_id (nullable for ad-hoc task
 **Skip Tracking Columns**:
 - `skip_reason`: Reason for skipping the task
 - `skipped_by_user`: User who skipped the task
+
+**Scheduling Constraint Columns** (instance-level):
+- `scheduled_start_time`: When this specific task instance should start
+- `max_wait_deadline`: If task is still PENDING after this time, escalate
+- `allowed_start_time_of_day`: Earliest time task can execute
+- `allowed_end_time_of_day`: Latest time task can execute
+- `allowed_days_of_week`: Comma-separated days
 
 **Ad-hoc Tasks**:
 ```
@@ -695,6 +735,193 @@ WHERE entity_type = 'ORDER'
 
 ---
 
+### 16. TASK_NOTES (Append-Only Clinical Documentation)
+```
+Columns: 14
+Primary Key: id (UUID)
+Foreign Key: task_instance_id
+```
+**Purpose**: Immutable notes for task instances - clinical documentation, audit trail, compliance
+
+**CRITICAL**: This table is **APPEND-ONLY**. Notes should NEVER be updated or deleted.
+Corrections must be added as ADDENDUM type notes referencing the original.
+
+**Key Columns**:
+- `task_instance_id`: Task this note belongs to
+- `note_type`: CREATION, ASSIGNMENT, START, PROGRESS, OBSERVATION, COMPLETION, SKIP, ESCALATION, FAILURE, COMMENT, HANDOFF, ALERT, ADDENDUM
+- `content`: Note text (immutable once created)
+- `author_user`: User who wrote the note
+- `author_role`: Role at time of note creation
+- `noted_at`: Timestamp of note creation
+- `addendum_to_note_id`: Reference to note being corrected (for ADDENDUM type)
+- `priority`: 0=Normal, 1=Important, 2=Critical
+- `is_flagged`: Boolean for flagged/urgent notes
+
+**Note Types**:
+```
+CREATION    - Note added when task/workflow created
+PROGRESS    - Update during task execution
+OBSERVATION - Clinical observation or finding
+COMPLETION  - Note when task completed
+SKIP        - Reason for skipping task
+ESCALATION  - Escalation reason/documentation
+HANDOFF     - Shift change handoff note
+ADDENDUM    - Correction to previous note
+```
+
+**Indexes**:
+- `idx_task_notes_task_instance` - Find task notes
+- `idx_task_notes_noted_at` - Time-based queries
+- `idx_task_notes_author` - Find notes by author
+- `idx_task_notes_type` - Filter by note type
+- `idx_task_notes_is_flagged` - Find urgent notes
+
+**Example Queries**:
+```sql
+-- Get all notes for a task (chronological)
+SELECT * FROM task_notes
+WHERE task_instance_id = 'task-001'
+ORDER BY noted_at ASC;
+
+-- Get flagged notes requiring attention
+SELECT * FROM task_notes
+WHERE is_flagged = TRUE
+ORDER BY noted_at DESC;
+
+-- Find addenda to a note
+SELECT * FROM task_notes
+WHERE addendum_to_note_id = 'note-001'
+ORDER BY noted_at ASC;
+```
+
+---
+
+### 17. TASK_RESULTS (Append-Only Structured Results)
+```
+Columns: 21
+Primary Key: id (UUID)
+Foreign Key: task_instance_id
+```
+**Purpose**: Structured clinical results - measurements, observations, outcomes
+
+**CRITICAL**: This table is **APPEND-ONLY**. Results should NEVER be updated.
+Use CORRECTION type to correct a previous result.
+
+**Key Columns**:
+- `task_instance_id`: Task this result belongs to
+- `result_type`: OUTCOME, MEASUREMENT, OBSERVATION, CALCULATED, TEST_RESULT, ASSESSMENT, PROCEDURE_OUTCOME, CORRECTION, SUMMARY
+- `result_name`: Name of result (e.g., "Blood Pressure")
+- `result_code`: Standard code (e.g., LOINC)
+- `code_system`: Code system (e.g., "LOINC", "SNOMED")
+- `result_value`: The actual value
+- `unit`: Unit of measurement (e.g., "mmHg")
+- `reference_range`: Normal range (e.g., "120-140")
+- `interpretation_code`: N=Normal, H=High, L=Low, A=Abnormal
+- `recorded_by_user`: User who recorded
+- `recorded_at`: When recorded
+- `observed_at`: When actually observed (may differ from recorded)
+- `verified_by_user`: User who verified
+- `verified_at`: Verification timestamp
+- `is_verified`: Boolean verification status
+- `is_critical`: Boolean for critical values
+- `corrects_result_id`: For CORRECTION type
+
+**Result Types**:
+```
+OUTCOME          - Primary task outcome
+MEASUREMENT      - Numeric measurement (vital signs)
+OBSERVATION      - Clinical observation
+TEST_RESULT      - Lab/imaging result
+ASSESSMENT       - Score (pain scale, ESI level)
+CORRECTION       - Correction to previous result
+```
+
+**Indexes**:
+- `idx_task_results_task_instance` - Find task results
+- `idx_task_results_recorded_at` - Time-based queries
+- `idx_task_results_type` - Filter by result type
+- `idx_task_results_code` - Find by LOINC/SNOMED code
+- `idx_task_results_is_verified` - Find unverified results
+- `idx_task_results_is_critical` - Find critical values
+
+**Example Queries**:
+```sql
+-- Get all results for a task
+SELECT * FROM task_results
+WHERE task_instance_id = 'task-001'
+ORDER BY recorded_at ASC;
+
+-- Find critical unverified results
+SELECT * FROM task_results
+WHERE is_critical = TRUE AND is_verified = FALSE;
+
+-- Get results by LOINC code
+SELECT * FROM task_results
+WHERE result_code = '8480-6' -- Systolic BP
+ORDER BY recorded_at DESC;
+```
+
+---
+
+### 18. ORDER_NOTES (Append-Only Order Documentation)
+```
+Columns: 14
+Primary Key: id (UUID)
+Foreign Key: order_id
+```
+**Purpose**: Immutable notes for orders - indications, interpretations, audit trail
+
+**CRITICAL**: This table is **APPEND-ONLY**. Notes should NEVER be updated or deleted.
+
+**Key Columns**:
+- `order_id`: Order this note belongs to
+- `note_type`: CREATION, INDICATION, AUTHORIZATION, ACTIVATION, PROGRESS, RESULT, INTERPRETATION, VERIFICATION, CANCELLATION, CLOSURE, COMMENT, PRIORITY_CHANGE, MODIFICATION, ALERT, ADDENDUM
+- `content`: Note text (immutable)
+- `author_user`: User who wrote the note
+- `author_role`: Role at time of note creation
+- `noted_at`: Timestamp of note creation
+- `addendum_to_note_id`: Reference to note being corrected
+- `priority`: 0=Normal, 1=Important, 2=Critical
+- `is_flagged`: Boolean for flagged notes
+
+**Note Types**:
+```
+INDICATION      - Clinical reason for order
+AUTHORIZATION   - Justification for signing
+INTERPRETATION  - Clinical interpretation of results
+CANCELLATION    - Reason for cancellation
+ADDENDUM        - Correction to previous note
+```
+
+**Indexes**:
+- `idx_order_notes_order` - Find order notes
+- `idx_order_notes_noted_at` - Time-based queries
+- `idx_order_notes_author` - Find notes by author
+- `idx_order_notes_type` - Filter by note type
+- `idx_order_notes_is_flagged` - Find urgent notes
+
+**Example Queries**:
+```sql
+-- Get all notes for an order (chronological)
+SELECT * FROM order_notes
+WHERE order_id = 'order-001'
+ORDER BY noted_at ASC;
+
+-- Get clinical indication for an order
+SELECT content FROM order_notes
+WHERE order_id = 'order-001' AND note_type = 'INDICATION';
+
+-- Get cancellation reasons for today
+SELECT o.order_id, n.content, n.author_user
+FROM orders o
+JOIN order_notes n ON o.id = n.order_id
+WHERE o.status = 'CANCELLED'
+  AND n.note_type = 'CANCELLATION'
+  AND DATE(o.cancelled_at) = CURRENT_DATE;
+```
+
+---
+
 ## Entity Relationship Diagram (Simplified)
 
 ```
@@ -709,10 +936,15 @@ WHERE entity_type = 'ORDER'
                    /       |        \
                   v        v         v
             TASK_INSTANCES ORDERS  INSTRUCTIONS
-                           |
-                        1:M|
-                           v
-                  COMPENSATION_ACTIONS
+                 /   \      |   \
+              1:M     1:M   |    1:M
+               v       v    |     v
+         TASK_NOTES  TASK_  |   ORDER_NOTES
+                     RESULTS|
+                            |
+                         1:M|
+                            v
+                   COMPENSATION_ACTIONS
 
 
          WORKFLOW_TEMPLATES (1)
@@ -919,13 +1151,17 @@ JOIN pg_catalog.pg_locks blocking_locks ON blocking_locks.locktype = blocked_loc
 
 | File | Purpose | Size | Records |
 |------|---------|------|---------|
-| `01-schema.sql` | Complete DDL | ~2,500 lines | 15 tables, 35+ indexes |
+| `01-schema.sql` | Complete DDL | ~750 lines | 18 tables, 55+ indexes |
 | `sample-data.sql` | Test data | ~800 lines | 40+ records |
 | `init-db.sh` | Setup script | ~250 lines | Supports 3 DBs |
 | `README.md` | DB docs | ~800 lines | Complete reference |
 
 ---
 
-**Last Updated**: 2024-11-10
-**Database Version**: 1.0
+**Last Updated**: 2024-12-15
+**Database Version**: 1.1
 **Status**: Production Ready
+
+### Version History
+- **1.1** (2024-12-15): Added task/order notes, task results, scheduling constraints
+- **1.0** (2024-11-10): Initial schema with 15 tables

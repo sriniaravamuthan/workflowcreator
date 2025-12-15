@@ -2,9 +2,15 @@ package com.hmis.workflow.service;
 
 import com.hmis.workflow.domain.entity.Patient;
 import com.hmis.workflow.domain.entity.TaskInstance;
+import com.hmis.workflow.domain.entity.TaskNote;
+import com.hmis.workflow.domain.entity.TaskNote.NoteType;
+import com.hmis.workflow.domain.entity.TaskResult;
+import com.hmis.workflow.domain.entity.TaskResult.ResultType;
 import com.hmis.workflow.domain.entity.WorkflowInstance;
 import com.hmis.workflow.domain.enums.TaskStatus;
 import com.hmis.workflow.repository.TaskInstanceRepository;
+import com.hmis.workflow.repository.TaskNoteRepository;
+import com.hmis.workflow.repository.TaskResultRepository;
 import com.hmis.workflow.repository.WorkflowInstanceRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,6 +38,8 @@ public class TaskInstanceService {
 
     private final TaskInstanceRepository taskRepository;
     private final WorkflowInstanceRepository workflowRepository;
+    private final TaskNoteRepository noteRepository;
+    private final TaskResultRepository resultRepository;
     private final NotificationService notificationService;
 
     /**
@@ -323,12 +331,324 @@ public class TaskInstanceService {
     }
 
     /**
-     * Update task comments
+     * Update task comments (DEPRECATED - use addNote instead for audit compliance).
+     * This method overwrites existing comments. For medical systems, use addNote
+     * which creates an append-only audit trail.
+     *
+     * @deprecated Use {@link #addNote(UUID, NoteType, String, String, String)} instead
      */
+    @Deprecated
     public TaskInstance updateTaskComments(UUID taskId, String comments) {
         TaskInstance task = getTaskInstance(taskId);
         task.setComments(comments);
         return taskRepository.save(task);
+    }
+
+    // ========================================================================
+    // TASK NOTES (APPEND-ONLY)
+    // ========================================================================
+
+    /**
+     * Add an immutable note to a task instance.
+     * Notes are append-only and cannot be modified or deleted for compliance.
+     *
+     * @param taskId The task instance ID
+     * @param noteType Type of note (CREATION, PROGRESS, COMPLETION, etc.)
+     * @param content The note content
+     * @param authorUser User creating the note
+     * @param authorRole Role of the user
+     * @return The created note
+     */
+    public TaskNote addNote(UUID taskId, NoteType noteType, String content,
+                           String authorUser, String authorRole) {
+        TaskInstance task = getTaskInstance(taskId);
+
+        if (content == null || content.trim().isEmpty()) {
+            throw new IllegalArgumentException("Note content cannot be empty");
+        }
+
+        TaskNote note = TaskNote.builder()
+                .taskInstance(task)
+                .noteType(noteType)
+                .content(content)
+                .authorUser(authorUser)
+                .authorRole(authorRole)
+                .notedAt(LocalDateTime.now())
+                .priority(0)
+                .isFlagged(false)
+                .build();
+
+        log.info("Added {} note to task {} by {}", noteType, taskId, authorUser);
+        return noteRepository.save(note);
+    }
+
+    /**
+     * Add an addendum/correction to an existing note.
+     *
+     * @param taskId The task instance ID
+     * @param originalNoteId The ID of the note being corrected
+     * @param content The addendum content
+     * @param authorUser User creating the addendum
+     * @param authorRole Role of the user
+     * @return The created addendum note
+     */
+    public TaskNote addAddendum(UUID taskId, String originalNoteId, String content,
+                               String authorUser, String authorRole) {
+        TaskInstance task = getTaskInstance(taskId);
+
+        if (content == null || content.trim().isEmpty()) {
+            throw new IllegalArgumentException("Addendum content cannot be empty");
+        }
+
+        TaskNote note = TaskNote.builder()
+                .taskInstance(task)
+                .noteType(NoteType.ADDENDUM)
+                .content(content)
+                .authorUser(authorUser)
+                .authorRole(authorRole)
+                .notedAt(LocalDateTime.now())
+                .addendumToNoteId(originalNoteId)
+                .priority(0)
+                .isFlagged(false)
+                .build();
+
+        log.info("Added addendum to note {} for task {} by {}", originalNoteId, taskId, authorUser);
+        return noteRepository.save(note);
+    }
+
+    /**
+     * Add a flagged/priority note.
+     *
+     * @param taskId The task instance ID
+     * @param noteType Type of note
+     * @param content The note content
+     * @param authorUser User creating the note
+     * @param authorRole Role of the user
+     * @param priority Priority level (0=Normal, 1=Important, 2=Critical)
+     * @return The created note
+     */
+    public TaskNote addFlaggedNote(UUID taskId, NoteType noteType, String content,
+                                   String authorUser, String authorRole, int priority) {
+        TaskInstance task = getTaskInstance(taskId);
+
+        if (content == null || content.trim().isEmpty()) {
+            throw new IllegalArgumentException("Note content cannot be empty");
+        }
+
+        TaskNote note = TaskNote.builder()
+                .taskInstance(task)
+                .noteType(noteType)
+                .content(content)
+                .authorUser(authorUser)
+                .authorRole(authorRole)
+                .notedAt(LocalDateTime.now())
+                .priority(priority)
+                .isFlagged(priority > 0)
+                .build();
+
+        log.info("Added flagged {} note (priority={}) to task {} by {}",
+                noteType, priority, taskId, authorUser);
+        return noteRepository.save(note);
+    }
+
+    /**
+     * Get all notes for a task (chronological order).
+     */
+    public List<TaskNote> getTaskNotes(UUID taskId) {
+        return noteRepository.findByTaskInstanceIdOrderByNotedAtAsc(taskId);
+    }
+
+    /**
+     * Get notes by type for a task.
+     */
+    public List<TaskNote> getTaskNotesByType(UUID taskId, NoteType noteType) {
+        return noteRepository.findByTaskInstanceIdAndNoteTypeOrderByNotedAtAsc(taskId, noteType);
+    }
+
+    /**
+     * Get flagged notes for a task.
+     */
+    public List<TaskNote> getFlaggedNotes(UUID taskId) {
+        return noteRepository.findByTaskInstanceIdAndIsFlaggedTrueOrderByNotedAtDesc(taskId);
+    }
+
+    // ========================================================================
+    // TASK RESULTS (APPEND-ONLY)
+    // ========================================================================
+
+    /**
+     * Record a structured result for a task.
+     * Results are append-only and cannot be modified for compliance.
+     * Use addResultCorrection to correct a previous result.
+     *
+     * @param taskId The task instance ID
+     * @param resultType Type of result
+     * @param resultName Name of the result (e.g., "Blood Pressure")
+     * @param resultValue The value
+     * @param unit Unit of measurement
+     * @param recordedByUser User recording the result
+     * @param recordedByRole Role of the user
+     * @return The created result
+     */
+    public TaskResult addResult(UUID taskId, ResultType resultType, String resultName,
+                                String resultValue, String unit,
+                                String recordedByUser, String recordedByRole) {
+        TaskInstance task = getTaskInstance(taskId);
+
+        if (resultName == null || resultName.trim().isEmpty()) {
+            throw new IllegalArgumentException("Result name cannot be empty");
+        }
+        if (resultValue == null || resultValue.trim().isEmpty()) {
+            throw new IllegalArgumentException("Result value cannot be empty");
+        }
+
+        TaskResult result = TaskResult.builder()
+                .taskInstance(task)
+                .resultType(resultType)
+                .resultName(resultName)
+                .resultValue(resultValue)
+                .unit(unit)
+                .recordedByUser(recordedByUser)
+                .recordedByRole(recordedByRole)
+                .recordedAt(LocalDateTime.now())
+                .isVerified(false)
+                .isCritical(false)
+                .build();
+
+        log.info("Recorded {} result '{}' = {} for task {} by {}",
+                resultType, resultName, resultValue, taskId, recordedByUser);
+        return resultRepository.save(result);
+    }
+
+    /**
+     * Record a result with standard code (e.g., LOINC).
+     */
+    public TaskResult addCodedResult(UUID taskId, ResultType resultType, String resultName,
+                                     String resultCode, String codeSystem,
+                                     String resultValue, String unit,
+                                     String referenceRange, String interpretationCode,
+                                     String recordedByUser, String recordedByRole) {
+        TaskInstance task = getTaskInstance(taskId);
+
+        TaskResult result = TaskResult.builder()
+                .taskInstance(task)
+                .resultType(resultType)
+                .resultName(resultName)
+                .resultCode(resultCode)
+                .codeSystem(codeSystem)
+                .resultValue(resultValue)
+                .unit(unit)
+                .referenceRange(referenceRange)
+                .interpretationCode(interpretationCode)
+                .recordedByUser(recordedByUser)
+                .recordedByRole(recordedByRole)
+                .recordedAt(LocalDateTime.now())
+                .isVerified(false)
+                .isCritical("A".equals(interpretationCode) || "H".equals(interpretationCode)
+                        || "L".equals(interpretationCode))
+                .build();
+
+        log.info("Recorded coded {} result '{}' ({}) = {} for task {} by {}",
+                resultType, resultName, resultCode, resultValue, taskId, recordedByUser);
+        return resultRepository.save(result);
+    }
+
+    /**
+     * Record a critical result.
+     */
+    public TaskResult addCriticalResult(UUID taskId, ResultType resultType, String resultName,
+                                        String resultValue, String unit,
+                                        String recordedByUser, String recordedByRole,
+                                        String comments) {
+        TaskInstance task = getTaskInstance(taskId);
+
+        TaskResult result = TaskResult.builder()
+                .taskInstance(task)
+                .resultType(resultType)
+                .resultName(resultName)
+                .resultValue(resultValue)
+                .unit(unit)
+                .recordedByUser(recordedByUser)
+                .recordedByRole(recordedByRole)
+                .recordedAt(LocalDateTime.now())
+                .isVerified(false)
+                .isCritical(true)
+                .comments(comments)
+                .build();
+
+        log.warn("Recorded CRITICAL {} result '{}' = {} for task {} by {}",
+                resultType, resultName, resultValue, taskId, recordedByUser);
+        return resultRepository.save(result);
+    }
+
+    /**
+     * Add a correction to a previous result.
+     */
+    public TaskResult addResultCorrection(UUID taskId, String originalResultId,
+                                          String correctedValue, String reason,
+                                          String recordedByUser, String recordedByRole) {
+        TaskInstance task = getTaskInstance(taskId);
+
+        TaskResult result = TaskResult.builder()
+                .taskInstance(task)
+                .resultType(ResultType.CORRECTION)
+                .resultName("Correction")
+                .resultValue(correctedValue)
+                .correctsResultId(originalResultId)
+                .recordedByUser(recordedByUser)
+                .recordedByRole(recordedByRole)
+                .recordedAt(LocalDateTime.now())
+                .comments(reason)
+                .isVerified(false)
+                .isCritical(false)
+                .build();
+
+        log.info("Recorded correction to result {} for task {} by {}: {}",
+                originalResultId, taskId, recordedByUser, reason);
+        return resultRepository.save(result);
+    }
+
+    /**
+     * Verify a result.
+     */
+    public TaskResult verifyResult(UUID resultId, String verifiedByUser) {
+        TaskResult result = resultRepository.findById(resultId)
+                .orElseThrow(() -> new IllegalArgumentException("Result not found: " + resultId));
+
+        result.setIsVerified(true);
+        result.setVerifiedByUser(verifiedByUser);
+        result.setVerifiedAt(LocalDateTime.now());
+
+        log.info("Verified result {} by {}", resultId, verifiedByUser);
+        return resultRepository.save(result);
+    }
+
+    /**
+     * Get all results for a task.
+     */
+    public List<TaskResult> getTaskResults(UUID taskId) {
+        return resultRepository.findByTaskInstanceIdOrderByRecordedAtAsc(taskId);
+    }
+
+    /**
+     * Get results by type for a task.
+     */
+    public List<TaskResult> getTaskResultsByType(UUID taskId, ResultType resultType) {
+        return resultRepository.findByTaskInstanceIdAndResultTypeOrderByRecordedAtAsc(taskId, resultType);
+    }
+
+    /**
+     * Get critical results for a task.
+     */
+    public List<TaskResult> getCriticalResults(UUID taskId) {
+        return resultRepository.findByTaskInstanceIdAndIsCriticalTrueOrderByRecordedAtDesc(taskId);
+    }
+
+    /**
+     * Get unverified results for a task.
+     */
+    public List<TaskResult> getUnverifiedResults(UUID taskId) {
+        return resultRepository.findByTaskInstanceIdAndIsVerifiedFalseOrderByRecordedAtAsc(taskId);
     }
 
     // ========================================================================

@@ -111,6 +111,42 @@ public class TaskInstance extends BaseEntity {
     @Column(length = 255)
     private String skippedByUser; // User who skipped the task
 
+    // Scheduling Constraints (instance-level, calculated from definition or overridden)
+    /**
+     * Scheduled start time for this specific task instance.
+     * Calculated from template definition or explicitly set.
+     */
+    @Column
+    private LocalDateTime scheduledStartTime;
+
+    /**
+     * Maximum wait deadline - if task is still PENDING after this time, escalate.
+     * Calculated as: createdAt + maxWaitTimeMinutes from definition.
+     */
+    @Column
+    private LocalDateTime maxWaitDeadline;
+
+    /**
+     * Earliest time of day when this task can be executed.
+     * Copied from task definition or overridden for this instance.
+     */
+    @Column
+    private java.time.LocalTime allowedStartTimeOfDay;
+
+    /**
+     * Latest time of day when this task can be executed.
+     * Copied from task definition or overridden for this instance.
+     */
+    @Column
+    private java.time.LocalTime allowedEndTimeOfDay;
+
+    /**
+     * Comma-separated list of allowed days of week.
+     * Copied from task definition or overridden for this instance.
+     */
+    @Column(length = 50)
+    private String allowedDaysOfWeek;
+
     @ManyToOne
     @JoinColumn(name = "workflow_instance_id", nullable = false, foreignKey = @ForeignKey(name = "fk_task_workflow"))
     @JsonIgnore
@@ -175,5 +211,67 @@ public class TaskInstance extends BaseEntity {
             return true; // Ad-hoc tasks are optional by default
         }
         return taskDefinition.getIsOptional();
+    }
+
+    /**
+     * Check if the max wait time has been exceeded (task waiting too long in PENDING).
+     *
+     * @return true if maxWaitDeadline is set and has passed
+     */
+    public Boolean isMaxWaitExceeded() {
+        if (maxWaitDeadline == null) {
+            return false;
+        }
+        return LocalDateTime.now().isAfter(maxWaitDeadline);
+    }
+
+    /**
+     * Get minutes remaining until max wait deadline.
+     *
+     * @return minutes remaining, null if no deadline, negative if exceeded
+     */
+    public Integer getMaxWaitMinutesRemaining() {
+        if (maxWaitDeadline == null) {
+            return null;
+        }
+        long minutesRemaining = java.time.temporal.ChronoUnit.MINUTES.between(LocalDateTime.now(), maxWaitDeadline);
+        return (int) minutesRemaining;
+    }
+
+    /**
+     * Check if the task can be executed now based on time-of-day constraints.
+     *
+     * @return true if current time is within allowed window
+     */
+    public Boolean isWithinAllowedTimeWindow() {
+        if (allowedStartTimeOfDay == null && allowedEndTimeOfDay == null) {
+            return true;
+        }
+        java.time.LocalTime now = java.time.LocalTime.now();
+        boolean afterStart = allowedStartTimeOfDay == null || !now.isBefore(allowedStartTimeOfDay);
+        boolean beforeEnd = allowedEndTimeOfDay == null || !now.isAfter(allowedEndTimeOfDay);
+        return afterStart && beforeEnd;
+    }
+
+    /**
+     * Check if today is an allowed day for this task.
+     *
+     * @return true if today is allowed or no day restrictions exist
+     */
+    public Boolean isTodayAllowed() {
+        if (allowedDaysOfWeek == null || allowedDaysOfWeek.trim().isEmpty()) {
+            return true;
+        }
+        String today = java.time.LocalDate.now().getDayOfWeek().name().substring(0, 3).toUpperCase();
+        return allowedDaysOfWeek.toUpperCase().contains(today);
+    }
+
+    /**
+     * Check if the task can be executed now (both time and day constraints).
+     *
+     * @return true if task can be executed at this moment
+     */
+    public Boolean canExecuteNow() {
+        return isWithinAllowedTimeWindow() && isTodayAllowed();
     }
 }
