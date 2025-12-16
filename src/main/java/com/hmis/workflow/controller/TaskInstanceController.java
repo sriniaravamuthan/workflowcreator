@@ -1,9 +1,18 @@
 package com.hmis.workflow.controller;
 
 import com.hmis.workflow.domain.entity.TaskInstance;
+import com.hmis.workflow.domain.entity.TaskNote;
+import com.hmis.workflow.domain.entity.TaskNote.NoteType;
+import com.hmis.workflow.domain.entity.TaskResult;
+import com.hmis.workflow.domain.entity.TaskResult.ResultType;
 import com.hmis.workflow.dto.ApiResponse;
 import com.hmis.workflow.dto.TaskInstanceDTO;
+import com.hmis.workflow.dto.TaskNoteDTO;
+import com.hmis.workflow.dto.TaskNoteRequest;
+import com.hmis.workflow.dto.TaskResultDTO;
+import com.hmis.workflow.dto.TaskResultRequest;
 import com.hmis.workflow.service.TaskInstanceService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -14,6 +23,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -289,6 +299,249 @@ public class TaskInstanceController {
         return ResponseEntity.ok(ApiResponse.success(dto, "Task comments updated successfully"));
     }
 
+    // ==================== TASK NOTES (APPEND-ONLY) ====================
+
+    /**
+     * Add a note to a task (append-only for compliance).
+     * POST /workflows/tasks/{id}/notes
+     */
+    @PostMapping("/{id}/notes")
+    public ResponseEntity<ApiResponse<TaskNoteDTO>> addTaskNote(
+            @PathVariable UUID id,
+            @Valid @RequestBody TaskNoteRequest request) {
+        log.info("Adding {} note to task {} by {}", request.getNoteType(), id, request.getAuthorUser());
+
+        TaskNote note;
+        if (request.getAddendumToNoteId() != null) {
+            note = taskInstanceService.addAddendum(
+                    id,
+                    request.getAddendumToNoteId(),
+                    request.getContent(),
+                    request.getAuthorUser(),
+                    request.getAuthorRole()
+            );
+        } else if (request.getPriority() != null && request.getPriority() > 0) {
+            note = taskInstanceService.addFlaggedNote(
+                    id,
+                    request.getNoteType(),
+                    request.getContent(),
+                    request.getAuthorUser(),
+                    request.getAuthorRole(),
+                    request.getPriority()
+            );
+        } else {
+            note = taskInstanceService.addNote(
+                    id,
+                    request.getNoteType(),
+                    request.getContent(),
+                    request.getAuthorUser(),
+                    request.getAuthorRole()
+            );
+        }
+
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.success(TaskNoteDTO.fromEntity(note), "Note added successfully"));
+    }
+
+    /**
+     * Get all notes for a task (chronological order).
+     * GET /workflows/tasks/{id}/notes
+     */
+    @GetMapping("/{id}/notes")
+    public ResponseEntity<ApiResponse<List<TaskNoteDTO>>> getTaskNotes(@PathVariable UUID id) {
+        log.info("Fetching notes for task: {}", id);
+
+        List<TaskNote> notes = taskInstanceService.getTaskNotes(id);
+        List<TaskNoteDTO> dtos = notes.stream()
+                .map(TaskNoteDTO::fromEntity)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(dtos, "Task notes retrieved successfully"));
+    }
+
+    /**
+     * Get notes by type for a task.
+     * GET /workflows/tasks/{id}/notes/type/{noteType}
+     */
+    @GetMapping("/{id}/notes/type/{noteType}")
+    public ResponseEntity<ApiResponse<List<TaskNoteDTO>>> getTaskNotesByType(
+            @PathVariable UUID id,
+            @PathVariable NoteType noteType) {
+        log.info("Fetching {} notes for task: {}", noteType, id);
+
+        List<TaskNote> notes = taskInstanceService.getTaskNotesByType(id, noteType);
+        List<TaskNoteDTO> dtos = notes.stream()
+                .map(TaskNoteDTO::fromEntity)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(dtos, "Task notes retrieved successfully"));
+    }
+
+    /**
+     * Get flagged notes for a task.
+     * GET /workflows/tasks/{id}/notes/flagged
+     */
+    @GetMapping("/{id}/notes/flagged")
+    public ResponseEntity<ApiResponse<List<TaskNoteDTO>>> getFlaggedNotes(@PathVariable UUID id) {
+        log.info("Fetching flagged notes for task: {}", id);
+
+        List<TaskNote> notes = taskInstanceService.getFlaggedNotes(id);
+        List<TaskNoteDTO> dtos = notes.stream()
+                .map(TaskNoteDTO::fromEntity)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(dtos, "Flagged notes retrieved successfully"));
+    }
+
+    // ==================== TASK RESULTS (APPEND-ONLY) ====================
+
+    /**
+     * Add a result to a task (append-only for compliance).
+     * POST /workflows/tasks/{id}/results
+     */
+    @PostMapping("/{id}/results")
+    public ResponseEntity<ApiResponse<TaskResultDTO>> addTaskResult(
+            @PathVariable UUID id,
+            @Valid @RequestBody TaskResultRequest request) {
+        log.info("Adding {} result '{}' to task {} by {}",
+                request.getResultType(), request.getResultName(), id, request.getRecordedByUser());
+
+        TaskResult result;
+        if (request.getCorrectsResultId() != null) {
+            // This is a correction to a previous result
+            result = taskInstanceService.addResultCorrection(
+                    id,
+                    request.getCorrectsResultId(),
+                    request.getResultValue(),
+                    request.getComments(),
+                    request.getRecordedByUser(),
+                    request.getRecordedByRole()
+            );
+        } else if (request.getResultCode() != null) {
+            // Coded result with standard code (e.g., LOINC)
+            result = taskInstanceService.addCodedResult(
+                    id,
+                    request.getResultType(),
+                    request.getResultName(),
+                    request.getResultCode(),
+                    request.getCodeSystem(),
+                    request.getResultValue(),
+                    request.getUnit(),
+                    request.getReferenceRange(),
+                    request.getInterpretationCode(),
+                    request.getRecordedByUser(),
+                    request.getRecordedByRole()
+            );
+        } else if (Boolean.TRUE.equals(request.getIsCritical())) {
+            // Critical result
+            result = taskInstanceService.addCriticalResult(
+                    id,
+                    request.getResultType(),
+                    request.getResultName(),
+                    request.getResultValue(),
+                    request.getUnit(),
+                    request.getRecordedByUser(),
+                    request.getRecordedByRole(),
+                    request.getComments()
+            );
+        } else {
+            // Basic result
+            result = taskInstanceService.addResult(
+                    id,
+                    request.getResultType(),
+                    request.getResultName(),
+                    request.getResultValue(),
+                    request.getUnit(),
+                    request.getRecordedByUser(),
+                    request.getRecordedByRole()
+            );
+        }
+
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.success(TaskResultDTO.fromEntity(result), "Result recorded successfully"));
+    }
+
+    /**
+     * Verify a result.
+     * POST /workflows/tasks/results/{resultId}/verify
+     */
+    @PostMapping("/results/{resultId}/verify")
+    public ResponseEntity<ApiResponse<TaskResultDTO>> verifyResult(
+            @PathVariable UUID resultId,
+            @RequestBody VerifyResultRequest request) {
+        log.info("Verifying result {} by {}", resultId, request.getVerifiedByUser());
+
+        TaskResult result = taskInstanceService.verifyResult(resultId, request.getVerifiedByUser());
+
+        return ResponseEntity.ok(ApiResponse.success(TaskResultDTO.fromEntity(result), "Result verified successfully"));
+    }
+
+    /**
+     * Get all results for a task (chronological order).
+     * GET /workflows/tasks/{id}/results
+     */
+    @GetMapping("/{id}/results")
+    public ResponseEntity<ApiResponse<List<TaskResultDTO>>> getTaskResults(@PathVariable UUID id) {
+        log.info("Fetching results for task: {}", id);
+
+        List<TaskResult> results = taskInstanceService.getTaskResults(id);
+        List<TaskResultDTO> dtos = results.stream()
+                .map(TaskResultDTO::fromEntity)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(dtos, "Task results retrieved successfully"));
+    }
+
+    /**
+     * Get results by type for a task.
+     * GET /workflows/tasks/{id}/results/type/{resultType}
+     */
+    @GetMapping("/{id}/results/type/{resultType}")
+    public ResponseEntity<ApiResponse<List<TaskResultDTO>>> getTaskResultsByType(
+            @PathVariable UUID id,
+            @PathVariable ResultType resultType) {
+        log.info("Fetching {} results for task: {}", resultType, id);
+
+        List<TaskResult> results = taskInstanceService.getTaskResultsByType(id, resultType);
+        List<TaskResultDTO> dtos = results.stream()
+                .map(TaskResultDTO::fromEntity)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(dtos, "Task results retrieved successfully"));
+    }
+
+    /**
+     * Get critical results for a task.
+     * GET /workflows/tasks/{id}/results/critical
+     */
+    @GetMapping("/{id}/results/critical")
+    public ResponseEntity<ApiResponse<List<TaskResultDTO>>> getCriticalResults(@PathVariable UUID id) {
+        log.info("Fetching critical results for task: {}", id);
+
+        List<TaskResult> results = taskInstanceService.getCriticalResults(id);
+        List<TaskResultDTO> dtos = results.stream()
+                .map(TaskResultDTO::fromEntity)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(dtos, "Critical results retrieved successfully"));
+    }
+
+    /**
+     * Get unverified results for a task.
+     * GET /workflows/tasks/{id}/results/unverified
+     */
+    @GetMapping("/{id}/results/unverified")
+    public ResponseEntity<ApiResponse<List<TaskResultDTO>>> getUnverifiedResults(@PathVariable UUID id) {
+        log.info("Fetching unverified results for task: {}", id);
+
+        List<TaskResult> results = taskInstanceService.getUnverifiedResults(id);
+        List<TaskResultDTO> dtos = results.stream()
+                .map(TaskResultDTO::fromEntity)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(dtos, "Unverified results retrieved successfully"));
+    }
+
     // ==================== Helper Methods ====================
 
     private TaskInstanceDTO mapToDTO(TaskInstance task) {
@@ -444,6 +697,18 @@ public class TaskInstanceController {
 
         public void setForceSkip(boolean forceSkip) {
             this.forceSkip = forceSkip;
+        }
+    }
+
+    static class VerifyResultRequest {
+        public String verifiedByUser;
+
+        public String getVerifiedByUser() {
+            return verifiedByUser;
+        }
+
+        public void setVerifiedByUser(String verifiedByUser) {
+            this.verifiedByUser = verifiedByUser;
         }
     }
 }

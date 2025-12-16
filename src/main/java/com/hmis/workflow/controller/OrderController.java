@@ -1,10 +1,15 @@
 package com.hmis.workflow.controller;
 
 import com.hmis.workflow.domain.entity.Order;
+import com.hmis.workflow.domain.entity.OrderNote;
+import com.hmis.workflow.domain.entity.OrderNote.NoteType;
 import com.hmis.workflow.domain.enums.OrderStatus;
 import com.hmis.workflow.domain.enums.OrderType;
 import com.hmis.workflow.dto.ApiResponse;
+import com.hmis.workflow.dto.OrderNoteDTO;
+import com.hmis.workflow.dto.OrderNoteRequest;
 import com.hmis.workflow.service.OrderService;
+import jakarta.validation.Valid;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -235,6 +240,100 @@ public class OrderController {
                 .collect(Collectors.toList());
 
         return ResponseEntity.ok(ApiResponse.success(dtos, "Orders with results retrieved successfully"));
+    }
+
+    // ==================== ORDER NOTES (APPEND-ONLY) ====================
+
+    /**
+     * Add a note to an order (append-only for compliance).
+     * POST /workflows/orders/{id}/notes
+     */
+    @PostMapping("/{id}/notes")
+    public ResponseEntity<ApiResponse<OrderNoteDTO>> addOrderNote(
+            @PathVariable UUID id,
+            @Valid @RequestBody OrderNoteRequest request) {
+        log.info("Adding {} note to order {} by {}", request.getNoteType(), id, request.getAuthorUser());
+
+        OrderNote note;
+        if (request.getAddendumToNoteId() != null) {
+            note = orderService.addAddendum(
+                    id,
+                    request.getAddendumToNoteId(),
+                    request.getContent(),
+                    request.getAuthorUser(),
+                    request.getAuthorRole()
+            );
+        } else if (request.getPriority() != null && request.getPriority() > 0) {
+            note = orderService.addFlaggedNote(
+                    id,
+                    request.getNoteType(),
+                    request.getContent(),
+                    request.getAuthorUser(),
+                    request.getAuthorRole(),
+                    request.getPriority()
+            );
+        } else {
+            note = orderService.addNote(
+                    id,
+                    request.getNoteType(),
+                    request.getContent(),
+                    request.getAuthorUser(),
+                    request.getAuthorRole()
+            );
+        }
+
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.success(OrderNoteDTO.fromEntity(note), "Note added successfully"));
+    }
+
+    /**
+     * Get all notes for an order (chronological order).
+     * GET /workflows/orders/{id}/notes
+     */
+    @GetMapping("/{id}/notes")
+    public ResponseEntity<ApiResponse<List<OrderNoteDTO>>> getOrderNotes(@PathVariable UUID id) {
+        log.info("Fetching notes for order: {}", id);
+
+        List<OrderNote> notes = orderService.getOrderNotes(id);
+        List<OrderNoteDTO> dtos = notes.stream()
+                .map(OrderNoteDTO::fromEntity)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(dtos, "Order notes retrieved successfully"));
+    }
+
+    /**
+     * Get notes by type for an order.
+     * GET /workflows/orders/{id}/notes/type/{noteType}
+     */
+    @GetMapping("/{id}/notes/type/{noteType}")
+    public ResponseEntity<ApiResponse<List<OrderNoteDTO>>> getOrderNotesByType(
+            @PathVariable UUID id,
+            @PathVariable NoteType noteType) {
+        log.info("Fetching {} notes for order: {}", noteType, id);
+
+        List<OrderNote> notes = orderService.getOrderNotesByType(id, noteType);
+        List<OrderNoteDTO> dtos = notes.stream()
+                .map(OrderNoteDTO::fromEntity)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(dtos, "Order notes retrieved successfully"));
+    }
+
+    /**
+     * Get flagged notes for an order.
+     * GET /workflows/orders/{id}/notes/flagged
+     */
+    @GetMapping("/{id}/notes/flagged")
+    public ResponseEntity<ApiResponse<List<OrderNoteDTO>>> getFlaggedOrderNotes(@PathVariable UUID id) {
+        log.info("Fetching flagged notes for order: {}", id);
+
+        List<OrderNote> notes = orderService.getFlaggedNotes(id);
+        List<OrderNoteDTO> dtos = notes.stream()
+                .map(OrderNoteDTO::fromEntity)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(dtos, "Flagged notes retrieved successfully"));
     }
 
     // ==================== Helper Methods ====================
