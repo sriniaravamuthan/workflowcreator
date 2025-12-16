@@ -42,6 +42,14 @@ public class TaskInstanceService {
     private final TaskResultRepository resultRepository;
     private final NotificationService notificationService;
 
+    // Lazy injection to avoid circular dependency
+    private WorkflowInstanceService workflowInstanceService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setWorkflowInstanceService(@org.springframework.context.annotation.Lazy WorkflowInstanceService workflowInstanceService) {
+        this.workflowInstanceService = workflowInstanceService;
+    }
+
     /**
      * Get task instance by ID
      */
@@ -119,7 +127,13 @@ public class TaskInstanceService {
     }
 
     /**
-     * Complete task with result
+     * Complete task with result.
+     *
+     * Task Propagation:
+     * 1. PRIMARY (Predecessor-based): Unblocks any tasks that have this task as a predecessor
+     * 2. LEGACY (Successor-based): Activates nextTaskId if defined (for backward compatibility)
+     *
+     * This ensures that both new predecessor-based workflows and legacy nextTaskId workflows work.
      */
     public TaskInstance completeTask(UUID taskId, String result, String completedByUser) {
         TaskInstance task = getTaskInstance(taskId);
@@ -136,18 +150,52 @@ public class TaskInstanceService {
         log.info("Completed task {} by {}", taskId, completedByUser);
         TaskInstance savedTask = taskRepository.save(task);
 
-        // Trigger next tasks/orders in workflow (only for template-based tasks)
         WorkflowInstance workflow = task.getWorkflowInstance();
+
+        // PRIMARY: Predecessor-based propagation
+        // Unblock any tasks that have this completed task as a predecessor
+        if (task.getTaskDefinition() != null && workflowInstanceService != null) {
+            String completedTaskDefId = task.getTaskDefinition().getId().toString();
+            List<TaskInstance> unblockedTasks = workflowInstanceService.unblockReadyTasks(
+                    workflow.getId(), completedTaskDefId);
+
+            if (!unblockedTasks.isEmpty()) {
+                log.info("Unblocked {} tasks after completion of task: {}",
+                        unblockedTasks.size(), task.getTaskName());
+
+                // Notify assignees of newly available tasks
+                for (TaskInstance unblocked : unblockedTasks) {
+                    if (unblocked.getAssignedTo() != null && !unblocked.getAssignedTo().isEmpty()) {
+                        notifyTaskAssignment(unblocked, false);
+                    }
+                }
+            }
+        }
+
+        // LEGACY: Successor-based propagation (for backward compatibility)
+        // Activate nextTaskId if defined in task definition
         if (task.getTaskDefinition() != null && task.getTaskDefinition().getNextTaskId() != null) {
-            // Find and activate next task
             String nextTaskId = task.getTaskDefinition().getNextTaskId();
             workflow.getTaskInstances().stream()
                     .filter(t -> t.getTaskDefinition() != null)
                     .filter(t -> nextTaskId.equals(t.getTaskDefinition().getId().toString()))
+                    .filter(t -> t.getStatus() == TaskStatus.BLOCKED) // Only unblock if still blocked
                     .forEach(t -> {
-                        t.setStatus(TaskStatus.PENDING);
-                        taskRepository.save(t);
+                        // Check if all predecessors are complete before unblocking
+                        if (workflowInstanceService == null || workflowInstanceService.canUnblockTask(t)) {
+                            t.setStatus(TaskStatus.PENDING);
+                            if (t.getSlaMinutes() != null && t.getSlaMinutes() > 0) {
+                                t.setDueAt(LocalDateTime.now().plusMinutes(t.getSlaMinutes()));
+                            }
+                            taskRepository.save(t);
+                            log.info("Activated next task via nextTaskId: {}", t.getTaskName());
+                        }
                     });
+        }
+
+        // Update workflow status - check if all tasks are done
+        if (workflowInstanceService != null) {
+            workflowInstanceService.updateWorkflowStatus(workflow.getId());
         }
 
         return savedTask;

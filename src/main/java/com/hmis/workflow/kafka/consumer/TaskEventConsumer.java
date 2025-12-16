@@ -86,6 +86,9 @@ public class TaskEventConsumer {
      *
      * This dual approach ensures backward compatibility while supporting the new
      * predecessor-based dependency model.
+     *
+     * Note: Ad-hoc tasks (taskDefinition = null) are supported but don't trigger
+     * predecessor-based propagation since they have no task definition ID.
      */
     private void handleTaskCompleted(TaskEvent event) {
         log.info("Processing TASK_COMPLETED event for task: {}", event.getTaskInstanceId());
@@ -119,52 +122,57 @@ public class TaskEventConsumer {
                 return;
             }
 
-            // Get the completed task's definition ID
-            String completedTaskDefId = completedTask.getTaskDefinition().getId().toString();
+            // Only perform predecessor-based propagation for template-based tasks
+            // Ad-hoc tasks (taskDefinition = null) don't have a definition ID to reference
+            if (completedTask.getTaskDefinition() != null) {
+                String completedTaskDefId = completedTask.getTaskDefinition().getId().toString();
 
-            // PRIMARY: Predecessor-based unblocking
-            // Unblock any tasks that have this completed task as a predecessor
-            List<TaskInstance> unblockedTasks = workflowInstanceService.unblockReadyTasks(
-                    workflowInstanceId, completedTaskDefId);
+                // PRIMARY: Predecessor-based unblocking
+                // Unblock any tasks that have this completed task as a predecessor
+                List<TaskInstance> unblockedTasks = workflowInstanceService.unblockReadyTasks(
+                        workflowInstanceId, completedTaskDefId);
 
-            if (!unblockedTasks.isEmpty()) {
-                log.info("Unblocked {} tasks after completion of task: {}",
-                        unblockedTasks.size(), completedTask.getTaskDefinition().getName());
+                if (!unblockedTasks.isEmpty()) {
+                    log.info("Unblocked {} tasks after completion of task: {}",
+                            unblockedTasks.size(), completedTask.getTaskName());
 
-                // Notify assignees of newly available tasks
-                for (TaskInstance unblocked : unblockedTasks) {
-                    if (unblocked.getAssignedTo() != null) {
-                        notifyTaskAssignment(unblocked, unblocked.getAssignedTo());
+                    // Notify assignees of newly available tasks
+                    for (TaskInstance unblocked : unblockedTasks) {
+                        if (unblocked.getAssignedTo() != null) {
+                            notifyTaskAssignment(unblocked, unblocked.getAssignedTo());
+                        }
                     }
                 }
-            }
 
-            // LEGACY: Successor-based propagation (for backward compatibility)
-            // Propagate to next task if defined in task definition
-            if (completedTask.getTaskDefinition() != null &&
-                    completedTask.getTaskDefinition().getNextTaskId() != null) {
+                // LEGACY: Successor-based propagation (for backward compatibility)
+                // Propagate to next task if defined in task definition
+                if (completedTask.getTaskDefinition().getNextTaskId() != null) {
+                    String nextTaskDefId = completedTask.getTaskDefinition().getNextTaskId();
+                    log.info("Legacy nextTaskId defined: {} after completion of task: {}",
+                            nextTaskDefId, taskInstanceId);
 
-                String nextTaskDefId = completedTask.getTaskDefinition().getNextTaskId();
-                log.info("Legacy nextTaskId defined: {} after completion of task: {}",
-                        nextTaskDefId, taskInstanceId);
-
-                // Find the task instance for this definition
-                workflow.getTaskInstances().stream()
-                        .filter(t -> t.getTaskDefinition().getId().toString().equals(nextTaskDefId))
-                        .filter(t -> t.getStatus() == TaskStatus.BLOCKED)
-                        .findFirst()
-                        .ifPresent(nextTask -> {
-                            // Check if all predecessors are complete before unblocking
-                            if (workflowInstanceService.canUnblockTask(nextTask)) {
-                                nextTask.setStatus(TaskStatus.PENDING);
-                                if (nextTask.getSlaMinutes() != null && nextTask.getSlaMinutes() > 0) {
-                                    nextTask.setDueAt(java.time.LocalDateTime.now()
-                                            .plusMinutes(nextTask.getSlaMinutes()));
+                    // Find the task instance for this definition (only template-based tasks)
+                    workflow.getTaskInstances().stream()
+                            .filter(t -> t.getTaskDefinition() != null)
+                            .filter(t -> t.getTaskDefinition().getId().toString().equals(nextTaskDefId))
+                            .filter(t -> t.getStatus() == TaskStatus.BLOCKED)
+                            .findFirst()
+                            .ifPresent(nextTask -> {
+                                // Check if all predecessors are complete before unblocking
+                                if (workflowInstanceService.canUnblockTask(nextTask)) {
+                                    nextTask.setStatus(TaskStatus.PENDING);
+                                    if (nextTask.getSlaMinutes() != null && nextTask.getSlaMinutes() > 0) {
+                                        nextTask.setDueAt(java.time.LocalDateTime.now()
+                                                .plusMinutes(nextTask.getSlaMinutes()));
+                                    }
+                                    log.info("Activated next task via nextTaskId: {}",
+                                            nextTask.getTaskName());
                                 }
-                                log.info("Activated next task via nextTaskId: {}",
-                                        nextTask.getTaskDefinition().getName());
-                            }
-                        });
+                            });
+                }
+            } else {
+                log.info("Ad-hoc task completed - no predecessor-based propagation: {}",
+                        completedTask.getTaskName());
             }
 
             // Update workflow status - check if all tasks are done
@@ -296,12 +304,15 @@ public class TaskEventConsumer {
     }
 
     /**
-     * Sends task escalation notification to escalated user
+     * Sends task escalation notification to escalated user.
+     * Uses helper methods to support both template-based and ad-hoc tasks.
      */
     private void notifyTaskEscalation(TaskInstance task, String escalatedToUser) {
         try {
-            String subject = String.format("URGENT: Task '%s' Escalated - SLA Breach",
-                    task.getTaskDefinition().getName());
+            // Use helper methods to handle both template-based and ad-hoc tasks
+            String taskName = task.getTaskName();
+
+            String subject = String.format("URGENT: Task '%s' Escalated - SLA Breach", taskName);
 
             String message = String.format(
                     "Task '%s' has been escalated due to SLA breach.\n\n" +
@@ -310,7 +321,7 @@ public class TaskEventConsumer {
                     "Escalated By: System\n" +
                     "Priority: URGENT\n\n" +
                     "Please attend to this task immediately.",
-                    task.getTaskDefinition().getName(),
+                    taskName,
                     task.getWorkflowInstance().getPatient().getId(),
                     task.getDueAt()
             );
@@ -334,12 +345,16 @@ public class TaskEventConsumer {
     }
 
     /**
-     * Sends task assignment notification to assigned user
+     * Sends task assignment notification to assigned user.
+     * Uses helper methods to support both template-based and ad-hoc tasks.
      */
     private void notifyTaskAssignment(TaskInstance task, String assignedToUser) {
         try {
-            String subject = String.format("New Task Assigned: '%s'",
-                    task.getTaskDefinition().getName());
+            // Use helper methods to handle both template-based and ad-hoc tasks
+            String taskName = task.getTaskName();
+            Boolean isOptional = task.isOptional();
+
+            String subject = String.format("New Task Assigned: '%s'", taskName);
 
             String message = String.format(
                     "You have been assigned a new task.\n\n" +
@@ -348,11 +363,10 @@ public class TaskEventConsumer {
                     "Due Date: %s\n" +
                     "Priority: %s\n\n" +
                     "Please log in to the workflow system to view details and start the task.",
-                    task.getTaskDefinition().getName(),
+                    taskName,
                     task.getWorkflowInstance().getPatient().getId(),
                     task.getDueAt(),
-                    task.getTaskDefinition().getPriority() != null ?
-                            task.getTaskDefinition().getPriority() : "NORMAL"
+                    Boolean.TRUE.equals(isOptional) ? "Optional" : "Required"
             );
 
             NotificationRequest request = new NotificationRequest(
@@ -374,10 +388,14 @@ public class TaskEventConsumer {
     }
 
     /**
-     * Sends SLA breach notification
+     * Sends SLA breach notification.
+     * Uses helper methods to support both template-based and ad-hoc tasks.
      */
     private void notifySLABreach(TaskInstance task, String escalatedToUser) {
         try {
+            // Use helper methods to handle both template-based and ad-hoc tasks
+            String taskName = task.getTaskName();
+
             String subject = "ALERT: Task SLA Breach";
 
             String message = String.format(
@@ -388,7 +406,7 @@ public class TaskEventConsumer {
                     "Current Time: %s\n" +
                     "Assigned To: %s\n\n" +
                     "Immediate action required.",
-                    task.getTaskDefinition().getName(),
+                    taskName,
                     task.getWorkflowInstance().getPatient().getId(),
                     task.getDueAt(),
                     java.time.LocalDateTime.now(),
