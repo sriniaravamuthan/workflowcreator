@@ -136,12 +136,14 @@ public class TaskInstanceService {
         log.info("Completed task {} by {}", taskId, completedByUser);
         TaskInstance savedTask = taskRepository.save(task);
 
-        // Trigger next tasks/orders in workflow
+        // Trigger next tasks/orders in workflow (only for template-based tasks)
         WorkflowInstance workflow = task.getWorkflowInstance();
-        if (task.getTaskDefinition().getNextTaskId() != null) {
+        if (task.getTaskDefinition() != null && task.getTaskDefinition().getNextTaskId() != null) {
             // Find and activate next task
+            String nextTaskId = task.getTaskDefinition().getNextTaskId();
             workflow.getTaskInstances().stream()
-                    .filter(t -> task.getTaskDefinition().getNextTaskId().equals(t.getTaskDefinition().getId().toString()))
+                    .filter(t -> t.getTaskDefinition() != null)
+                    .filter(t -> nextTaskId.equals(t.getTaskDefinition().getId().toString()))
                     .forEach(t -> {
                         t.setStatus(TaskStatus.PENDING);
                         taskRepository.save(t);
@@ -666,9 +668,14 @@ public class TaskInstanceService {
             Patient patient = task.getWorkflowInstance().getPatient();
             String actionType = isReassignment ? "reassigned" : "assigned";
 
+            // Use helper methods to handle both template-based and ad-hoc tasks
+            String taskName = task.getTaskName();
+            String taskDescription = task.getTaskDescription();
+            Boolean isOptional = task.isOptional();
+
             String subject = String.format("Task %s: %s",
                     isReassignment ? "Reassigned" : "Assigned",
-                    task.getTaskDefinition().getName());
+                    taskName);
 
             String message = String.format(
                     "You have been %s a task.\n\n" +
@@ -679,13 +686,12 @@ public class TaskInstanceService {
                     "Priority: %s\n\n" +
                     "Please log in to the workflow system to view details and start the task.",
                     actionType,
-                    task.getTaskDefinition().getName(),
-                    task.getTaskDefinition().getDescription() != null ?
-                            task.getTaskDefinition().getDescription() : "N/A",
+                    taskName,
+                    taskDescription != null ? taskDescription : "N/A",
                     patient.getFirstName(),
                     patient.getLastName(),
                     task.getDueAt() != null ? task.getDueAt().toString() : "Not set",
-                    task.getTaskDefinition().getIsOptional() ? "Optional" : "Required"
+                    Boolean.TRUE.equals(isOptional) ? "Optional" : "Required"
             );
 
             NotificationRequest request = new NotificationRequest(
@@ -700,7 +706,7 @@ public class TaskInstanceService {
 
             notificationService.notifyUser(request);
             log.info("Sent task {} notification to {} for task {}",
-                    actionType, task.getAssignedTo(), task.getTaskDefinition().getName());
+                    actionType, task.getAssignedTo(), taskName);
 
         } catch (Exception e) {
             log.error("Failed to send task assignment notification for task {}: {}",
@@ -718,8 +724,11 @@ public class TaskInstanceService {
         try {
             Patient patient = task.getWorkflowInstance().getPatient();
 
-            String subject = String.format("URGENT: Task Escalated - %s",
-                    task.getTaskDefinition().getName());
+            // Use helper methods to handle both template-based and ad-hoc tasks
+            String taskName = task.getTaskName();
+            String taskDescription = task.getTaskDescription();
+
+            String subject = String.format("URGENT: Task Escalated - %s", taskName);
 
             String message = String.format(
                     "A task has been escalated to you and requires immediate attention.\n\n" +
@@ -730,9 +739,8 @@ public class TaskInstanceService {
                     "Escalation Reason: %s\n" +
                     "Original Assignee: %s\n\n" +
                     "Please attend to this task immediately.",
-                    task.getTaskDefinition().getName(),
-                    task.getTaskDefinition().getDescription() != null ?
-                            task.getTaskDefinition().getDescription() : "N/A",
+                    taskName,
+                    taskDescription != null ? taskDescription : "N/A",
                     patient.getFirstName(),
                     patient.getLastName(),
                     task.getDueAt() != null ? task.getDueAt().toString() : "Not set",
@@ -752,7 +760,7 @@ public class TaskInstanceService {
 
             notificationService.notifyUser(request);
             log.info("Sent task escalation notification to {} for task {}",
-                    task.getEscalatedToUser(), task.getTaskDefinition().getName());
+                    task.getEscalatedToUser(), taskName);
 
         } catch (Exception e) {
             log.error("Failed to send task escalation notification for task {}: {}",

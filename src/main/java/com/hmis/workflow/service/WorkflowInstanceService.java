@@ -124,6 +124,20 @@ public class WorkflowInstanceService {
             taskInstance.setRequiredRole(taskDef.getAssignTo());
             taskInstance.setMaxRetries(3);
 
+            // Copy scheduling constraints from definition to instance
+            if (taskDef.getScheduledStartTime() != null) {
+                // Convert LocalTime to LocalDateTime based on workflow start
+                taskInstance.setScheduledStartTime(
+                        LocalDateTime.now().with(taskDef.getScheduledStartTime()));
+            }
+            if (taskDef.getMaxWaitTimeMinutes() != null && taskDef.getMaxWaitTimeMinutes() > 0) {
+                taskInstance.setMaxWaitDeadline(
+                        LocalDateTime.now().plusMinutes(taskDef.getMaxWaitTimeMinutes()));
+            }
+            taskInstance.setAllowedStartTimeOfDay(taskDef.getAllowedStartTimeOfDay());
+            taskInstance.setAllowedEndTimeOfDay(taskDef.getAllowedEndTimeOfDay());
+            taskInstance.setAllowedDaysOfWeek(taskDef.getAllowedDaysOfWeek());
+
             // Determine initial status based on predecessors
             if (taskDef.isEntryTask()) {
                 // Entry task (no predecessors) - can start immediately
@@ -167,16 +181,16 @@ public class WorkflowInstanceService {
      */
     private void notifyEntryTaskAssignees(WorkflowInstance instance) {
         instance.getTaskInstances().stream()
-                .filter(task -> task.getTaskDefinition().isEntryTask())
+                .filter(task -> task.getTaskDefinition() != null && task.getTaskDefinition().isEntryTask())
                 .filter(task -> task.getAssignedTo() != null && !task.getAssignedTo().isEmpty())
                 .forEach(task -> {
                     try {
                         notifyTaskAssignment(task, instance.getPatient());
                         log.info("Sent task assignment notification to {} for entry task {}",
-                                task.getAssignedTo(), task.getTaskDefinition().getName());
+                                task.getAssignedTo(), task.getTaskName());
                     } catch (Exception e) {
                         log.error("Failed to send notification for entry task {}: {}",
-                                task.getTaskDefinition().getName(), e.getMessage());
+                                task.getTaskName(), e.getMessage());
                     }
                 });
     }
@@ -188,7 +202,12 @@ public class WorkflowInstanceService {
      * @param patient The patient associated with the workflow
      */
     private void notifyTaskAssignment(TaskInstance task, Patient patient) {
-        String subject = String.format("New Task Assigned: %s", task.getTaskDefinition().getName());
+        // Use helper methods to handle both template-based and ad-hoc tasks
+        String taskName = task.getTaskName();
+        String taskDescription = task.getTaskDescription();
+        Boolean isOptional = task.isOptional();
+
+        String subject = String.format("New Task Assigned: %s", taskName);
 
         String message = String.format(
                 "You have been assigned a new task.\n\n" +
@@ -198,13 +217,12 @@ public class WorkflowInstanceService {
                 "Due Date: %s\n" +
                 "Priority: %s\n\n" +
                 "Please log in to the workflow system to view details and start the task.",
-                task.getTaskDefinition().getName(),
-                task.getTaskDefinition().getDescription() != null ?
-                        task.getTaskDefinition().getDescription() : "N/A",
+                taskName,
+                taskDescription != null ? taskDescription : "N/A",
                 patient.getFirstName(),
                 patient.getLastName(),
                 task.getDueAt() != null ? task.getDueAt().toString() : "Not set",
-                task.getTaskDefinition().getIsOptional() ? "Optional" : "Required"
+                Boolean.TRUE.equals(isOptional) ? "Optional" : "Required"
         );
 
         NotificationRequest request = new NotificationRequest(
@@ -315,8 +333,9 @@ public class WorkflowInstanceService {
         WorkflowInstance instance = getWorkflowInstance(instanceId);
 
         // Check if all required tasks are completed
+        // Use isOptional() helper method which handles ad-hoc tasks (null taskDefinition)
         boolean allRequired = instance.getTaskInstances().stream()
-                .filter(t -> !t.getTaskDefinition().getIsOptional())
+                .filter(t -> !Boolean.TRUE.equals(t.isOptional()))
                 .allMatch(t -> t.getStatus() == TaskStatus.COMPLETED);
 
         if (!allRequired) {
@@ -359,8 +378,9 @@ public class WorkflowInstanceService {
                 .count();
 
         // If any required task failed, mark workflow as failed
+        // Use isOptional() helper method which handles ad-hoc tasks (null taskDefinition)
         boolean requiredTaskFailed = instance.getTaskInstances().stream()
-                .filter(t -> !t.getTaskDefinition().getIsOptional())
+                .filter(t -> !Boolean.TRUE.equals(t.isOptional()))
                 .anyMatch(t -> t.getStatus() == TaskStatus.FAILED);
 
         if (requiredTaskFailed) {
@@ -389,17 +409,20 @@ public class WorkflowInstanceService {
     public List<TaskInstance> unblockReadyTasks(UUID instanceId, String completedTaskDefId) {
         WorkflowInstance instance = getWorkflowInstance(instanceId);
 
-        // Get all completed task definition IDs
+        // Get all completed task definition IDs (only for template-based tasks)
         java.util.Set<String> completedTaskDefIds = instance.getTaskInstances().stream()
                 .filter(t -> t.getStatus() == TaskStatus.COMPLETED || t.getStatus() == TaskStatus.SKIPPED)
+                .filter(t -> t.getTaskDefinition() != null) // Exclude ad-hoc tasks
                 .map(t -> t.getTaskDefinition().getId().toString())
                 .collect(java.util.stream.Collectors.toSet());
 
         List<TaskInstance> unblockedTasks = new java.util.ArrayList<>();
 
         // Check each blocked task to see if all its predecessors are completed
+        // Only template-based tasks can have predecessors
         instance.getTaskInstances().stream()
                 .filter(t -> t.getStatus() == TaskStatus.BLOCKED)
+                .filter(t -> t.getTaskDefinition() != null) // Exclude ad-hoc tasks
                 .forEach(blockedTask -> {
                     List<String> predecessors = blockedTask.getTaskDefinition().getPredecessorTaskIdList();
 
@@ -420,7 +443,7 @@ public class WorkflowInstanceService {
                         unblockedTasks.add(blockedTask);
 
                         log.info("Unblocked task {} (all predecessors completed)",
-                                blockedTask.getTaskDefinition().getName());
+                                blockedTask.getTaskName());
                     }
                 });
 
@@ -438,6 +461,11 @@ public class WorkflowInstanceService {
             return false;
         }
 
+        // Ad-hoc tasks should never be blocked (they're always PENDING)
+        if (taskInstance.getTaskDefinition() == null) {
+            return true;
+        }
+
         WorkflowInstance instance = taskInstance.getWorkflowInstance();
         List<String> predecessors = taskInstance.getTaskDefinition().getPredecessorTaskIdList();
 
@@ -446,9 +474,10 @@ public class WorkflowInstanceService {
             return true;
         }
 
-        // Get all completed task definition IDs
+        // Get all completed task definition IDs (only for template-based tasks)
         java.util.Set<String> completedTaskDefIds = instance.getTaskInstances().stream()
                 .filter(t -> t.getStatus() == TaskStatus.COMPLETED || t.getStatus() == TaskStatus.SKIPPED)
+                .filter(t -> t.getTaskDefinition() != null) // Exclude ad-hoc tasks
                 .map(t -> t.getTaskDefinition().getId().toString())
                 .collect(java.util.stream.Collectors.toSet());
 
@@ -458,6 +487,7 @@ public class WorkflowInstanceService {
 
     /**
      * Get all entry tasks (tasks with no predecessors) for a workflow instance.
+     * Ad-hoc tasks are included as they have no predecessors by definition.
      *
      * @param instanceId The workflow instance ID
      * @return List of entry task instances
@@ -466,7 +496,7 @@ public class WorkflowInstanceService {
         WorkflowInstance instance = getWorkflowInstance(instanceId);
 
         return instance.getTaskInstances().stream()
-                .filter(t -> t.getTaskDefinition().isEntryTask())
+                .filter(t -> t.getTaskDefinition() == null || t.getTaskDefinition().isEntryTask())
                 .collect(java.util.stream.Collectors.toList());
     }
 
