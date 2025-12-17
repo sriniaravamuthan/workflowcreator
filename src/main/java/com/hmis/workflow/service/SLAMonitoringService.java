@@ -131,7 +131,7 @@ public class SLAMonitoringService {
                                 "Due: %s\n" +
                                 "Overdue by: %.1f hours\n\n" +
                                 "Please complete this task immediately.",
-                                task.getTaskDefinition().getName(),
+                                task.getTaskName(),
                                 task.getWorkflowInstance().getPatient().getId(),
                                 task.getDueAt(),
                                 calculateHoursOverdue(task.getDueAt())
@@ -160,7 +160,7 @@ public class SLAMonitoringService {
                                 "Overdue by: %.1f hours\n\n" +
                                 "Reason: %s\n\n" +
                                 "This task has been escalated to you for resolution.",
-                                task.getTaskDefinition().getName(),
+                                task.getTaskName(),
                                 task.getWorkflowInstance().getPatient().getId(),
                                 task.getAssignedTo(),
                                 task.getDueAt(),
@@ -179,7 +179,7 @@ public class SLAMonitoringService {
             String alertMessage = String.format(
                     "ALERT: Task '%s' has exceeded SLA deadline. " +
                     "Assigned to: %s, Due: %s, Overdue by: %.1f hours",
-                    task.getTaskDefinition().getName(),
+                    task.getTaskName(),
                     task.getAssignedTo(),
                     task.getDueAt(),
                     calculateHoursOverdue(task.getDueAt())
@@ -231,13 +231,14 @@ public class SLAMonitoringService {
     }
 
     /**
-     * Logs SLA breach to audit trail
+     * Logs SLA breach to audit trail.
+     * Uses helper methods to support both template-based and ad-hoc tasks.
      */
     private void logSLABreach(TaskInstance task) {
         try {
             log.info("Logging SLA breach for audit trail:");
             log.info("  Task ID: {}", task.getId());
-            log.info("  Task Name: {}", task.getTaskDefinition().getName());
+            log.info("  Task Name: {}", task.getTaskName());
             log.info("  Assigned To: {}", task.getAssignedTo());
             log.info("  Due At: {}", task.getDueAt());
             log.info("  Current Time: {}", LocalDateTime.now());

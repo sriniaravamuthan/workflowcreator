@@ -202,7 +202,8 @@ public class TaskInstanceService {
     }
 
     /**
-     * Fail task with error message
+     * Fail task with error message.
+     * Updates workflow status after failing the task.
      */
     public TaskInstance failTask(UUID taskId, String errorMessage, String failedByUser) {
         TaskInstance task = getTaskInstance(taskId);
@@ -216,7 +217,14 @@ public class TaskInstanceService {
         task.setCompletedAt(LocalDateTime.now());
 
         log.warn("Failed task {} - Error: {}", taskId, errorMessage);
-        return taskRepository.save(task);
+        TaskInstance savedTask = taskRepository.save(task);
+
+        // Update workflow status - workflow may need to be marked as failed
+        if (workflowInstanceService != null) {
+            workflowInstanceService.updateWorkflowStatus(task.getWorkflowInstance().getId());
+        }
+
+        return savedTask;
     }
 
     /**
@@ -288,6 +296,10 @@ public class TaskInstanceService {
      * - Clinical judgment overrides standard protocol
      * - Task no longer applicable due to condition change
      *
+     * Task Propagation:
+     * Skipping a task unblocks downstream tasks just like completing a task.
+     * This ensures workflows don't get stuck when tasks are skipped.
+     *
      * @param taskId The task instance ID
      * @param reason The reason for skipping (required for non-optional tasks)
      * @param skippedByUser The user who is skipping the task
@@ -339,7 +351,55 @@ public class TaskInstanceService {
                 skippedByUser,
                 reason);
 
-        return taskRepository.save(task);
+        TaskInstance savedTask = taskRepository.save(task);
+
+        WorkflowInstance workflow = task.getWorkflowInstance();
+
+        // PRIMARY: Predecessor-based propagation
+        // Skipping a task should unblock downstream tasks just like completing it
+        if (task.getTaskDefinition() != null && workflowInstanceService != null) {
+            String skippedTaskDefId = task.getTaskDefinition().getId().toString();
+            List<TaskInstance> unblockedTasks = workflowInstanceService.unblockReadyTasks(
+                    workflow.getId(), skippedTaskDefId);
+
+            if (!unblockedTasks.isEmpty()) {
+                log.info("Unblocked {} tasks after skipping task: {}",
+                        unblockedTasks.size(), task.getTaskName());
+
+                // Notify assignees of newly available tasks
+                for (TaskInstance unblocked : unblockedTasks) {
+                    if (unblocked.getAssignedTo() != null && !unblocked.getAssignedTo().isEmpty()) {
+                        notifyTaskAssignment(unblocked, false);
+                    }
+                }
+            }
+        }
+
+        // LEGACY: Successor-based propagation (for backward compatibility)
+        if (task.getTaskDefinition() != null && task.getTaskDefinition().getNextTaskId() != null) {
+            String nextTaskId = task.getTaskDefinition().getNextTaskId();
+            workflow.getTaskInstances().stream()
+                    .filter(t -> t.getTaskDefinition() != null)
+                    .filter(t -> nextTaskId.equals(t.getTaskDefinition().getId().toString()))
+                    .filter(t -> t.getStatus() == TaskStatus.BLOCKED)
+                    .forEach(t -> {
+                        if (workflowInstanceService == null || workflowInstanceService.canUnblockTask(t)) {
+                            t.setStatus(TaskStatus.PENDING);
+                            if (t.getSlaMinutes() != null && t.getSlaMinutes() > 0) {
+                                t.setDueAt(LocalDateTime.now().plusMinutes(t.getSlaMinutes()));
+                            }
+                            taskRepository.save(t);
+                            log.info("Activated next task via nextTaskId after skip: {}", t.getTaskName());
+                        }
+                    });
+        }
+
+        // Update workflow status - check if all tasks are done
+        if (workflowInstanceService != null) {
+            workflowInstanceService.updateWorkflowStatus(workflow.getId());
+        }
+
+        return savedTask;
     }
 
     /**
