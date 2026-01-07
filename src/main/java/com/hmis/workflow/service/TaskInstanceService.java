@@ -41,6 +41,7 @@ public class TaskInstanceService {
     private final TaskNoteRepository noteRepository;
     private final TaskResultRepository resultRepository;
     private final NotificationService notificationService;
+    private final ExternalNotificationService externalNotificationService;
 
     // Lazy injection to avoid circular dependency
     private WorkflowInstanceService workflowInstanceService;
@@ -150,6 +151,11 @@ public class TaskInstanceService {
         log.info("Completed task {} by {}", taskId, completedByUser);
         TaskInstance savedTask = taskRepository.save(task);
 
+        // Send external notification to downstream systems (async)
+        if (externalNotificationService != null) {
+            externalNotificationService.notifyTaskCompleted(savedTask, result, completedByUser);
+        }
+
         WorkflowInstance workflow = task.getWorkflowInstance();
 
         // PRIMARY: Predecessor-based propagation
@@ -218,6 +224,11 @@ public class TaskInstanceService {
 
         log.warn("Failed task {} - Error: {}", taskId, errorMessage);
         TaskInstance savedTask = taskRepository.save(task);
+
+        // Send external notification to downstream systems (async)
+        if (externalNotificationService != null) {
+            externalNotificationService.notifyTaskFailed(savedTask, errorMessage, failedByUser);
+        }
 
         // Update workflow status - workflow may need to be marked as failed
         if (workflowInstanceService != null) {
@@ -352,6 +363,11 @@ public class TaskInstanceService {
                 reason);
 
         TaskInstance savedTask = taskRepository.save(task);
+
+        // Send external notification to downstream systems (async)
+        if (externalNotificationService != null) {
+            externalNotificationService.notifyTaskSkipped(savedTask, reason, skippedByUser);
+        }
 
         WorkflowInstance workflow = task.getWorkflowInstance();
 

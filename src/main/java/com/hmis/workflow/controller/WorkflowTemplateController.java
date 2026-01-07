@@ -7,10 +7,13 @@ import com.hmis.workflow.dto.AddOrderToTemplateRequest;
 import com.hmis.workflow.dto.AddTaskToTemplateRequest;
 import com.hmis.workflow.dto.ApiResponse;
 import com.hmis.workflow.dto.CreateWorkflowTemplateRequest;
+import com.hmis.workflow.dto.TaskNotificationConfigDTO;
+import com.hmis.workflow.dto.TaskNotificationConfigRequest;
 import com.hmis.workflow.dto.TemplateOrderDTO;
 import com.hmis.workflow.dto.UpdateWorkflowTemplateRequest;
 import com.hmis.workflow.dto.WorkflowTaskDefinitionDTO;
 import com.hmis.workflow.dto.WorkflowTemplateDTO;
+import com.hmis.workflow.service.ExternalNotificationService;
 import com.hmis.workflow.service.TemplateManagementService;
 import com.hmis.workflow.service.WorkflowTemplateService;
 import lombok.RequiredArgsConstructor;
@@ -42,6 +45,7 @@ public class WorkflowTemplateController {
 
     private final WorkflowTemplateService templateService;
     private final TemplateManagementService templateManagementService;
+    private final ExternalNotificationService externalNotificationService;
 
     /**
      * Create a new workflow template
@@ -412,6 +416,172 @@ public class WorkflowTemplateController {
 
         return ResponseEntity.ok(ApiResponse.success("Task deleted from template successfully",
                 "Task deleted from template successfully"));
+    }
+
+    // ==================== Task Notification Configuration Endpoints ====================
+
+    /**
+     * Configure external notification for a task definition.
+     * Sets up Kafka topic and/or API endpoint for downstream system notifications.
+     * PUT /workflows/templates/{id}/tasks/{taskId}/notification
+     */
+    @PutMapping("/{id}/tasks/{taskId}/notification")
+    public ResponseEntity<ApiResponse<TaskNotificationConfigDTO>> configureTaskNotification(
+            @PathVariable UUID id,
+            @PathVariable UUID taskId,
+            @RequestBody TaskNotificationConfigRequest request) {
+        log.info("Configuring notification for task {} in template {}", taskId, id);
+
+        WorkflowTemplate template = templateService.getTemplate(id);
+
+        WorkflowTaskDefinition taskDef = template.getTasks().stream()
+                .filter(t -> t.getId().equals(taskId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
+
+        // Update notification configuration
+        taskDef.setNotificationType(request.getNotificationType());
+        taskDef.setNotificationKafkaTopic(request.getNotificationKafkaTopic());
+        taskDef.setNotificationApiEndpoint(request.getNotificationApiEndpoint());
+        taskDef.setNotificationApiMethod(request.getNotificationApiMethod());
+        taskDef.setNotificationMessageTemplate(request.getNotificationMessageTemplate());
+        taskDef.setNotificationApiHeaders(request.getNotificationApiHeaders());
+
+        if (request.getNotifyOnFailure() != null) {
+            taskDef.setNotifyOnFailure(request.getNotifyOnFailure());
+        }
+        if (request.getNotifyOnSkip() != null) {
+            taskDef.setNotifyOnSkip(request.getNotifyOnSkip());
+        }
+
+        // Validate the configuration
+        java.util.Map<String, Object> validation = externalNotificationService.validateConfiguration(taskDef);
+        if (!Boolean.TRUE.equals(validation.get("valid"))) {
+            return ResponseEntity.badRequest()
+                    .body(ApiResponse.error("Invalid notification configuration: " + validation.toString()));
+        }
+
+        // Save the updated template
+        templateService.updateTemplate(id, template);
+
+        TaskNotificationConfigDTO dto = TaskNotificationConfigDTO.fromEntity(taskDef);
+
+        return ResponseEntity.ok(ApiResponse.success(dto, "Task notification configured successfully"));
+    }
+
+    /**
+     * Get notification configuration for a task definition.
+     * GET /workflows/templates/{id}/tasks/{taskId}/notification
+     */
+    @GetMapping("/{id}/tasks/{taskId}/notification")
+    public ResponseEntity<ApiResponse<TaskNotificationConfigDTO>> getTaskNotification(
+            @PathVariable UUID id,
+            @PathVariable UUID taskId) {
+        log.info("Getting notification config for task {} in template {}", taskId, id);
+
+        WorkflowTemplate template = templateService.getTemplate(id);
+
+        WorkflowTaskDefinition taskDef = template.getTasks().stream()
+                .filter(t -> t.getId().equals(taskId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
+
+        TaskNotificationConfigDTO dto = TaskNotificationConfigDTO.fromEntity(taskDef);
+
+        return ResponseEntity.ok(ApiResponse.success(dto, "Task notification configuration retrieved"));
+    }
+
+    /**
+     * Validate notification configuration for a task definition without saving.
+     * POST /workflows/templates/{id}/tasks/{taskId}/notification/validate
+     */
+    @PostMapping("/{id}/tasks/{taskId}/notification/validate")
+    public ResponseEntity<ApiResponse<java.util.Map<String, Object>>> validateTaskNotification(
+            @PathVariable UUID id,
+            @PathVariable UUID taskId,
+            @RequestBody TaskNotificationConfigRequest request) {
+        log.info("Validating notification config for task {} in template {}", taskId, id);
+
+        WorkflowTemplate template = templateService.getTemplate(id);
+
+        WorkflowTaskDefinition taskDef = template.getTasks().stream()
+                .filter(t -> t.getId().equals(taskId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
+
+        // Create a temporary copy for validation
+        WorkflowTaskDefinition tempDef = WorkflowTaskDefinition.builder()
+                .name(taskDef.getName())
+                .notificationType(request.getNotificationType())
+                .notificationKafkaTopic(request.getNotificationKafkaTopic())
+                .notificationApiEndpoint(request.getNotificationApiEndpoint())
+                .notificationApiMethod(request.getNotificationApiMethod())
+                .notificationMessageTemplate(request.getNotificationMessageTemplate())
+                .notificationApiHeaders(request.getNotificationApiHeaders())
+                .build();
+
+        java.util.Map<String, Object> validation = externalNotificationService.validateConfiguration(tempDef);
+
+        String message = Boolean.TRUE.equals(validation.get("valid"))
+                ? "Configuration is valid"
+                : "Configuration has validation errors";
+
+        return ResponseEntity.ok(ApiResponse.success(validation, message));
+    }
+
+    /**
+     * Remove notification configuration from a task definition.
+     * DELETE /workflows/templates/{id}/tasks/{taskId}/notification
+     */
+    @DeleteMapping("/{id}/tasks/{taskId}/notification")
+    public ResponseEntity<ApiResponse<String>> removeTaskNotification(
+            @PathVariable UUID id,
+            @PathVariable UUID taskId) {
+        log.info("Removing notification config for task {} in template {}", taskId, id);
+
+        WorkflowTemplate template = templateService.getTemplate(id);
+
+        WorkflowTaskDefinition taskDef = template.getTasks().stream()
+                .filter(t -> t.getId().equals(taskId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
+
+        // Clear notification configuration
+        taskDef.setNotificationType("NONE");
+        taskDef.setNotificationKafkaTopic(null);
+        taskDef.setNotificationApiEndpoint(null);
+        taskDef.setNotificationApiMethod(null);
+        taskDef.setNotificationMessageTemplate(null);
+        taskDef.setNotificationApiHeaders(null);
+        taskDef.setNotifyOnFailure(true);
+        taskDef.setNotifyOnSkip(false);
+
+        // Save the updated template
+        templateService.updateTemplate(id, template);
+
+        return ResponseEntity.ok(ApiResponse.success("Notification configuration removed",
+                "Task notification configuration has been removed"));
+    }
+
+    /**
+     * Get all tasks with notification configured in a template.
+     * GET /workflows/templates/{id}/tasks/with-notifications
+     */
+    @GetMapping("/{id}/tasks/with-notifications")
+    public ResponseEntity<ApiResponse<List<TaskNotificationConfigDTO>>> getTasksWithNotifications(
+            @PathVariable UUID id) {
+        log.info("Getting all tasks with notifications in template {}", id);
+
+        WorkflowTemplate template = templateService.getTemplate(id);
+
+        List<TaskNotificationConfigDTO> tasksWithNotifications = template.getTasks().stream()
+                .filter(t -> t.getNotificationType() != null
+                        && !"NONE".equalsIgnoreCase(t.getNotificationType()))
+                .map(TaskNotificationConfigDTO::fromEntity)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(tasksWithNotifications,
+                "Found " + tasksWithNotifications.size() + " tasks with notifications configured"));
     }
 
     // ==================== Helper Methods ====================
