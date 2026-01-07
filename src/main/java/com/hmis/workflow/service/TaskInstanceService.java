@@ -42,6 +42,7 @@ public class TaskInstanceService {
     private final TaskResultRepository resultRepository;
     private final NotificationService notificationService;
     private final ExternalNotificationService externalNotificationService;
+    private final AuditService auditService;
 
     // Lazy injection to avoid circular dependency
     private WorkflowInstanceService workflowInstanceService;
@@ -101,6 +102,11 @@ public class TaskInstanceService {
         log.info("Assigned task {} to {}", taskId, assignedTo);
         TaskInstance savedTask = taskRepository.save(task);
 
+        // Audit log the assignment
+        if (auditService != null) {
+            auditService.logTaskAssigned(savedTask, previousAssignee, assignedTo, assignedTo);
+        }
+
         // Notify the newly assigned user
         if (assignedTo != null && !assignedTo.isEmpty()) {
             boolean isReassignment = previousAssignee != null && !previousAssignee.isEmpty()
@@ -121,10 +127,18 @@ public class TaskInstanceService {
             throw new IllegalStateException("Cannot start task not in PENDING status");
         }
 
+        String previousStatus = task.getStatus().name();
         task.setStatus(TaskStatus.IN_PROGRESS);
         task.setStartedAt(LocalDateTime.now());
         log.info("Started task {} by {}", taskId, startedByUser);
-        return taskRepository.save(task);
+        TaskInstance savedTask = taskRepository.save(task);
+
+        // Audit log the status change
+        if (auditService != null) {
+            auditService.logTaskStatusChange(savedTask, previousStatus, "IN_PROGRESS", startedByUser);
+        }
+
+        return savedTask;
     }
 
     /**
@@ -150,6 +164,11 @@ public class TaskInstanceService {
 
         log.info("Completed task {} by {}", taskId, completedByUser);
         TaskInstance savedTask = taskRepository.save(task);
+
+        // Audit log the completion
+        if (auditService != null) {
+            auditService.logTaskCompleted(savedTask, result, completedByUser);
+        }
 
         // Send external notification to downstream systems (async)
         if (externalNotificationService != null) {
@@ -225,6 +244,11 @@ public class TaskInstanceService {
         log.warn("Failed task {} - Error: {}", taskId, errorMessage);
         TaskInstance savedTask = taskRepository.save(task);
 
+        // Audit log the failure
+        if (auditService != null) {
+            auditService.logTaskFailed(savedTask, errorMessage, failedByUser);
+        }
+
         // Send external notification to downstream systems (async)
         if (externalNotificationService != null) {
             externalNotificationService.notifyTaskFailed(savedTask, errorMessage, failedByUser);
@@ -277,6 +301,11 @@ public class TaskInstanceService {
 
         log.info("Escalated task {} to {} - Reason: {}", taskId, escalatedToUser, reason);
         TaskInstance savedTask = taskRepository.save(task);
+
+        // Audit log the escalation
+        if (auditService != null) {
+            auditService.logTaskAssigned(savedTask, task.getAssignedTo(), escalatedToUser, escalatedToUser);
+        }
 
         // Notify the escalated user
         if (escalatedToUser != null && !escalatedToUser.isEmpty()) {
@@ -363,6 +392,11 @@ public class TaskInstanceService {
                 reason);
 
         TaskInstance savedTask = taskRepository.save(task);
+
+        // Audit log the skip
+        if (auditService != null) {
+            auditService.logTaskSkipped(savedTask, reason, skippedByUser);
+        }
 
         // Send external notification to downstream systems (async)
         if (externalNotificationService != null) {
